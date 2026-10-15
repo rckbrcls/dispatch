@@ -57,3 +57,36 @@ func TestSnapshotSamplingAndCooldown(t *testing.T) {
 		t.Fatalf("%v", c)
 	}
 }
+
+func TestStoreAppendRedactsSecrets(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "runs.jsonl")}
+	rec := Record{
+		ID:     "sec-1",
+		Status: Failed,
+		Output: "ran with GITHUB_TOKEN=ghp_secret12345",
+		Error:  "failed: Authorization: Bearer secret_bearer_token",
+		Note:   "note: AWS_SECRET_ACCESS_KEY=my_secret_aws_key",
+		Attempts: []Attempt{
+			{Agent: "a", Model: "m", Error: "attempt error with DB_PASSWORD=my_db_pass"},
+		},
+	}
+	if err := s.Append(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("sec-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Output != "ran with GITHUB_TOKEN=[REDACTED]" {
+		t.Errorf("output not redacted: %q", got.Output)
+	}
+	if got.Error != "failed: Authorization: [REDACTED]" {
+		t.Errorf("error not redacted: %q", got.Error)
+	}
+	if got.Note != "note: AWS_SECRET_ACCESS_KEY=[REDACTED]" {
+		t.Errorf("note not redacted: %q", got.Note)
+	}
+	if len(got.Attempts) != 1 || got.Attempts[0].Error != "attempt error with DB_PASSWORD=[REDACTED]" {
+		t.Errorf("attempt error not redacted: %+v", got.Attempts)
+	}
+}

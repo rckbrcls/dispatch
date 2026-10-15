@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"dispatch/internal/sandbox"
 )
 
 // Codex drives the OpenAI Codex CLI: `codex exec` for runs and the official
@@ -35,6 +37,7 @@ func appServerCall(ctx context.Context, method string, params any) (json.RawMess
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "codex", "-s", "read-only", "-a", "never", "app-server")
+	cmd.Env = sandbox.Environ()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -153,9 +156,9 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	out.Close()
 	defer os.Remove(out.Name())
 
-	sandbox := "workspace-write"
+	sandboxMode := "workspace-write"
 	if req.ReadOnly {
-		sandbox = "read-only"
+		sandboxMode = "read-only"
 	}
 	// `exec resume` has no -s/-C flags, so sandbox goes through config and
 	// the working directory through the process.
@@ -163,7 +166,7 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	if req.ResumeSession != "" {
 		args = append(args, "resume")
 	}
-	args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", sandbox),
+	args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", sandboxMode),
 		"--json", "--skip-git-repo-check", "-o", out.Name())
 	if model != "" {
 		args = append(args, "-m", model)
@@ -174,6 +177,11 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	args = append(args, "-") // prompt from stdin
 	cmd := exec.CommandContext(ctx, "codex", args...)
 	ownGroup(cmd)
+	if len(req.Env) > 0 {
+		cmd.Env = req.Env
+	} else {
+		cmd.Env = sandbox.Environ()
+	}
 	cmd.Dir = req.Dir
 	cmd.Stdin = bytes.NewBufferString(req.Prompt)
 	var stdout, stderr bytes.Buffer

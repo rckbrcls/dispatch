@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ func (f fake) Run(_ context.Context, r adapter.Request, m string) (adapter.Resul
 
 func deps(t *testing.T, ran *[]string, a ...adapter.Adapter) Deps {
 	t.Setenv(depthEnv, "")
+	t.Setenv(noDelegateEnv, "")
 	return Deps{
 		Adapters: a,
 		Table: tiers.Table{Tiers: map[adapter.Tier][]tiers.Entry{
@@ -87,6 +89,61 @@ func TestRecursionRefused(t *testing.T) {
 	t.Setenv(depthEnv, "1")
 	if _, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy}); !errors.Is(err, ErrRecursive) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestNoDelegateRefused(t *testing.T) {
+	// (c) run com DISPATCH_NO_DELEGATE recusa
+	var ran []string
+	d := deps(t, &ran)
+	t.Setenv(noDelegateEnv, "1")
+	if _, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy}); !errors.Is(err, ErrRecursive) {
+		t.Fatalf("got %v, want ErrRecursive", err)
+	}
+}
+
+type fakeEnvAdapter struct {
+	fake
+	capturedEnv *[]string
+}
+
+func (f fakeEnvAdapter) Run(ctx context.Context, r adapter.Request, m string) (adapter.Result, error) {
+	*f.capturedEnv = append([]string(nil), r.Env...)
+	return f.fake.Run(ctx, r, m)
+}
+
+func TestChildEnvironmentVariables(t *testing.T) {
+	var ran []string
+	var env []string
+	f := fakeEnvAdapter{
+		fake:        fake{name: "a", out: "ok", ran: &ran},
+		capturedEnv: &env,
+	}
+	d := deps(t, &ran, f)
+	t.Setenv(runIDEnv, "parent-run-456")
+
+	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustContain := map[string]string{
+		"DISPATCH_DEPTH":         "1",
+		"DISPATCH_RUN_ID":        rec.ID,
+		"DISPATCH_PARENT_RUN_ID": "parent-run-456",
+		"DISPATCH_NO_DELEGATE":   "1",
+	}
+
+	envMap := map[string]string{}
+	for _, entry := range env {
+		k, v, _ := strings.Cut(entry, "=")
+		envMap[k] = v
+	}
+
+	for k, want := range mustContain {
+		if got := envMap[k]; got != want {
+			t.Errorf("env[%s] = %q, want %q", k, got, want)
+		}
 	}
 }
 

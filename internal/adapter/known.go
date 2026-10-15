@@ -4,6 +4,8 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+
+	"dispatch/internal/sandbox"
 )
 
 // Cursor drives the Cursor CLI. The binary is cursor-agent: a bare `agent`
@@ -16,7 +18,9 @@ func Cursor() Adapter {
 		listArgs:    []string{"models"},
 		parseModels: parseCursorModels,
 		newSession: func(ctx context.Context) (string, error) {
-			out, err := exec.CommandContext(ctx, "cursor-agent", "create-chat").Output()
+			cmd := exec.CommandContext(ctx, "cursor-agent", "create-chat")
+			cmd.Env = sandbox.Environ()
+			out, err := cmd.Output()
 			return strings.TrimSpace(string(out)), err
 		},
 		args: func(r Request, model, session string, _ bool) []string {

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"dispatch/internal/sandbox"
 )
 
 // cliAdapter is a one-shot print-mode CLI: run a prompt, read stdout.
@@ -40,7 +42,9 @@ func (c cliAdapter) Quota(context.Context) (Quota, error) { return Quota{}, ErrN
 var claudeModel = regexp.MustCompile(`(?i)claude|sonnet|opus|haiku|fable`)
 
 func (c cliAdapter) Models(ctx context.Context) ([]Model, error) {
-	out, err := exec.CommandContext(ctx, c.binary, c.listArgs...).Output()
+	cmd := exec.CommandContext(ctx, c.binary, c.listArgs...)
+	cmd.Env = sandbox.Environ()
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +75,11 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 	}
 	cmd := exec.CommandContext(ctx, c.binary, c.args(req, model, session, resume)...)
 	ownGroup(cmd)
+	if len(req.Env) > 0 {
+		cmd.Env = req.Env
+	} else {
+		cmd.Env = sandbox.Environ()
+	}
 	if c.setDir {
 		cmd.Dir = req.Dir
 	}
