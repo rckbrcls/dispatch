@@ -831,10 +831,8 @@ func merge(args []string) int {
 			body := map[string]any{
 				"id":        rec.ID,
 				"status":    "merge_conflict",
-				"files":     res.Conflicts,
 				"conflicts": res.Conflicts,
 				"hint":      fmt.Sprintf("dispatch run --resume %s (pedindo rebase), ou resolver a mão", rec.ID),
-				"dica":      fmt.Sprintf("dispatch run --resume %s (pedindo rebase), ou resolver a mão", rec.ID),
 			}
 			printJSON(body)
 			return 1
@@ -871,7 +869,6 @@ func merge(args []string) int {
 			body["post_merge_verification"] = "failed"
 			revertCmd := fmt.Sprintf("git revert -m 1 %s", mergeSHA)
 			body["revert"] = revertCmd
-			body["suggested_revert"] = revertCmd
 			if len(vRes.Checks) > 0 {
 				body["verify"] = vRes
 			}

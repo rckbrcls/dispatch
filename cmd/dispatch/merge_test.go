@@ -162,9 +162,9 @@ func TestMergeConflictTwoRunsEditingSameFile(t *testing.T) {
 	if body2["status"] != "merge_conflict" {
 		t.Fatalf("expected status merge_conflict, got %#v", body2["status"])
 	}
-	files, ok := body2["files"].([]any)
+	files, ok := body2["conflicts"].([]any)
 	if !ok || len(files) == 0 || files[0] != "shared.txt" {
-		t.Fatalf("expected files to contain shared.txt, got %#v", body2["files"])
+		t.Fatalf("expected files to contain shared.txt, got %#v", body2["conflicts"])
 	}
 	hint, _ := body2["hint"].(string)
 	if !strings.Contains(hint, "dispatch run --resume r2") {
