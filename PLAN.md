@@ -7,25 +7,25 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 
 | Fase | Entrega | Depende de | Tamanho |
 |---|---|---|---|
-| 0 | Segurança barata | n/d | P |
-| 0b | `dispatch on/off` + hook de sessão | n/d (pode sair antes de tudo) | P |
-| 1 | Lifecycle robusto | 0 | M |
-| 2 | Verificador + baseline | 1 | G |
-| 3 | `RunSummary` v1 + `stats` | 2 | P/M |
-| 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) | 3 | M |
+| 0 | Segurança barata **(feita)** | n/d | P |
+| 0b | `dispatch on/off` + hook de sessão **(feita)** | n/d (pode sair antes de tudo) | P |
+| 1 | Lifecycle robusto **(feita)** | 0 | M |
+| 2 | Verificador + baseline **(feita)** | 1 | G |
+| 3 | `RunSummary` v1 + `stats` **(feita)** | 2 | P/M |
+| 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
 | 4 | Adapters (`doctor`, capabilities) + quota tipada | n/d (pode ir em paralelo à 3) | M |
 | 5b | Prioridade `speed|balanced|quality` no roteador | 3b (dados de latência) | P/M |
 | 5 | Merge gate | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |
 | 7 | Adiados (com gatilho) | 2 a 6 | n/d |
 
-## Fase 0 — Segurança barata
+## Fase 0 — Segurança barata (feita)
 - Env saneada: `cmd.Env` com allowlist (`PATH`, `HOME`, temp, locale e o que o CLI oficial precisa), em vez de `os.Environ()`.
 - Guard de recursão: `DISPATCH_RUN_ID`, `DISPATCH_PARENT_RUN_ID`, `DISPATCH_DEPTH`, `DISPATCH_NO_DELEGATE=1`. O `run` recusa se herdar `NO_DELEGATE`.
 - Redação de segredos nos logs e no JSONL (`*_TOKEN`, `*_SECRET`, `Authorization`, `Bearer`, blocos de chave privada).
 - Pronto quando: teste prova que uma variável secreta do pai não chega ao filho, e que `dispatch run` dentro de um run falha com mensagem clara.
 
-## Fase 0b — `dispatch on/off` e hook de sessão
+## Fase 0b — `dispatch on/off` e hook de sessão (feita)
 Objetivo: sessões novas do Claude já começam sabendo que o dispatch está ativo e citam a skill sozinhas, sem o usuário pedir. Liga e desliga sob demanda.
 
 Mecanismo (conferido em code.claude.com/docs/en/hooks e /plugins):
@@ -49,14 +49,14 @@ Riscos e decisões:
 
 Pronto quando: com `on`, uma sessão nova cita e usa a skill sem ser instruída; com `off`, nenhum contexto extra é injetado; `hook uninstall` deixa o settings como estava.
 
-## Fase 1 — Lifecycle
+## Fase 1 — Lifecycle (feita)
 - Estados: `queued → starting → running → verifying → ready_to_merge → merged|failed|canceled|orphaned` (`verifying` entra vazio, preenchido na fase 2).
 - `Setpgid` + cancel por grupo (`SIGTERM`, grace, `SIGKILL`). Guardar `pid`, hora de início, base SHA, branch, worktree.
 - Reconciliação no startup: reler `runs.jsonl`, cruzar com processos vivos e `git worktree list --porcelain`. Árvore dirty vira `orphaned` e é preservada, nunca apagada.
 - `dispatch recover|clean` para decidir o destino dos órfãos.
 - Pronto quando: teste mata o `dispatch` no meio de um run e o próximo comando reconcilia sem perder trabalho.
 
-## Fase 2 — Verificador
+## Fase 2 — Verificador (feita)
 - Config em `.dispatch/verify.json` (comandos, timeout, `required`) e autodescoberta de fallback (`go test`, `go vet`, Makefile).
 - Execução via `exec.CommandContext`, sem shell.
 - Baseline por `base_sha + config_hash`, em cache; regressão = falha que não existia no baseline.
@@ -65,13 +65,13 @@ Pronto quando: com `on`, uma sessão nova cita e usa a skill sem ser instruída;
 - Gravar as features do prompt no `runs.jsonl` já aqui, para o classificador ter dados depois.
 - Pronto quando: run de escrita termina em `verified` ou `verification_failed` com a lista de regressões, e o baseline não imputa ao agente falhas pré-existentes.
 
-## Fase 3 — `RunSummary` v1
+## Fase 3 — `RunSummary` v1 (feita)
 - Contrato `dispatch.run-summary.v1`: status, agente, tier, duração, arquivos, +/-, verify, merge, retries, ponteiro para detalhes. Saída humana de 3 linhas e `--json`.
 - `result` com seções: `summary`, `verification`, `files`, `diff`, `stderr`, `agent`, `routing`, `quota`.
 - `dispatch stats`: agregações direto do JSONL (sucesso na primeira, p50/p90, rate limits, fallbacks, órfãos).
 - Pronto quando: `run` imprime só o summary e o texto livre do agente fica atrás de `--section agent`.
 
-## Fase 3b — Telemetria e `dispatch stats`
+## Fase 3b — Telemetria e `dispatch stats` (feita)
 Hoje o `runs.jsonl` já tem `agent`, `model`, `tier`, `status`, `attempts`, `createdAt`, `finishedAt` (duração já é derivável) e `snapshots.jsonl` tem a quota por janela. Faltam campos para uma telemetria de verdade.
 
 Novos campos por run (todos opcionais; ausente = desconhecido, nunca zero):
