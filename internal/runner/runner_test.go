@@ -503,7 +503,7 @@ func TestDegradedCodexProbeDoesNotBreakRun(t *testing.T) {
 		if err := os.WriteFile(helpPath, []byte(helpText), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\ncase \"$1\" in\n--version) /bin/cat %q ;;\n--help) /bin/cat %q ;;\nesac\nout=\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=$a; fi\n  prev=$a\ndone\nif [ -n \"$out\" ]; then printf 'ok\\n' > \"$out\"; fi\nexit 0\n", logPath, verPath, helpPath)
+		script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\ncase \"$*\" in\n--version) /bin/cat %q ;;\n--help|\"exec --help\") /bin/cat %q ;;\nesac\nout=\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=$a; fi\n  prev=$a\ndone\nif [ -n \"$out\" ]; then printf 'ok\\n' > \"$out\"; fi\nexit 0\n", logPath, verPath, helpPath)
 		if err := os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -549,7 +549,7 @@ func TestDegradedCodexProbeDoesNotBreakRun(t *testing.T) {
 			t.Fatalf("%s %q\n%s", rec.Status, rec.Error, log)
 		}
 		for _, line := range strings.Split(log, "\n") {
-			if strings.HasPrefix(line, "exec") {
+			if strings.HasPrefix(line, "exec") && line != "exec --help" {
 				t.Fatalf("readonly run was not refused:\n%s", log)
 			}
 		}
