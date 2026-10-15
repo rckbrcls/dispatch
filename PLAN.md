@@ -13,7 +13,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 2 | Verificador + baseline **(feita)** | 1 | G |
 | 3 | `RunSummary` v1 + `stats` **(feita)** | 2 | P/M |
 | 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
-| 4 | Adapters (`doctor`, capabilities) + quota tipada | n/d (pode ir em paralelo à 3) | M |
+| 4 | Adapters (`doctor`, capabilities) + quota tipada **(feita)** | n/d (pode ir em paralelo à 3) | M |
 | 5b | Prioridade `speed|balanced|quality` no roteador | 3b (dados de latência) | P/M |
 | 5 | Merge gate | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |
@@ -96,7 +96,7 @@ Retenção: rotação do `runs.jsonl` por tamanho/idade com `gzip`; `stats` lê 
 
 Pronto quando: `dispatch stats --by model --since 30d` e `dispatch stats --capacity` rodam sobre dados reais e deixam explícito o que é desconhecido.
 
-## Fase 4 — Adapters, `doctor` e quota tipada
+## Fase 4 — Adapters, `doctor` e quota tipada (feita)
 - `Probe()` e `Capabilities()` por adapter, sem chamar modelo; capabilities opcionais via interfaces pequenas (`UsageProvider`, `Resumer`).
 - `dispatch doctor`: versão, flags e capabilities por CLI, com `OK / DEGRADED / UNVERIFIED`.
 - Golden tests em `testdata/<adapter>/<versão>/`.

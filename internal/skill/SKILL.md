@@ -110,7 +110,8 @@ no ranking, não filtros: um agente evitado ainda roda se for o único com folga
 - **Não reenvie igual:** `FAILED` com candidatos esgotados significa melhorar o brief (1–2 frases) ou
   subir um tier. `TIMED_OUT`/`CANCELLED` não fazem fallback.
 - **Um escritor por diretório** e sem `push`, deploy ou segredos no brief.
-- Não há fonte de quota para Cursor e Grok: o roteamento deles só aprende depois de um rate limit.
+- Não há fonte de quota para Cursor e Grok: o roteamento deles só aprende depois de um rate limit. `dispatch agents` mostra `confidence=empirical` e o risco (cooldown ou rate limit recente), nunca um percentual inventado.
+- CLI `DEGRADED` ainda roda, com um note. Capability exigida e ausente (readonly, por exemplo) é recusada com erro claro.
 - Permissões do agente (sandbox/allow-rules) valem: se um agente negar escrita, o run cai para o próximo.
 
 ## Diagnóstico
@@ -119,7 +120,8 @@ no ranking, não filtros: um agente evitado ainda roda se for o único com folga
 dispatch status          # status do dispatch (on/off), hook e skill
 dispatch on / off        # liga/desliga injeção de contexto em novas sessões
 dispatch hook install / uninstall # registra/remove hook SessionStart do Claude
-dispatch agents          # CLIs instalados
+dispatch agents          # CLIs instalados, com fonte e confiança da quota
+dispatch doctor [--json] # versão, flags e capabilities (OK, DEGRADED, UNVERIFIED); não chama modelo
 dispatch tiers           # tabela efetiva (edite ~/.dispatch/tiers.json após `dispatch tiers --init`)
 dispatch tiers --check   # valida a tabela contra agentes e modelos instalados
 dispatch subagents --check   # valida os perfis (tier, timeout, agentes citados)

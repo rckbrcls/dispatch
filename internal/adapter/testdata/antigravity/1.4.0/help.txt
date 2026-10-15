@@ -1,0 +1,10 @@
+agy
+
+Flags:
+  --output-format json
+  --sandbox
+  --disable-slash-commands
+  --mode plan
+  --conversation
+  --model
+  -p

@@ -1,0 +1,14 @@
+Codex CLI
+
+Usage:
+  codex [flags]
+  codex exec [flags] [PROMPT]
+  codex exec resume [SESSION]
+  codex app-server
+
+Flags:
+  -c    config override (sandbox_mode, including read-only)
+  -m    model
+  -o    output file
+  --json
+  --skip-git-repo-check

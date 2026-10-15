@@ -41,6 +41,7 @@ const usageText = `usage:
   dispatch hook install | uninstall
   dispatch context --hook
   dispatch agents [--json]
+  dispatch doctor [--json]
   dispatch tiers [--init | --check]
   dispatch run --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
                [--background] [--no-worktree] [--no-verify] [--json] <prompt | ->
@@ -81,6 +82,8 @@ func main() {
 		os.Exit(contextCmd(args))
 	case "agents":
 		agents(args)
+	case "doctor":
+		os.Exit(doctorCmd(args))
 	case "subagents":
 		os.Exit(subagentsCmd(args))
 	case "tiers":
@@ -173,6 +176,13 @@ func emitSummary(rec store.Record, asJSON bool) {
 
 // --- agents ---
 
+type quotaInfo struct {
+	Source     string                `json:"source"`
+	Confidence adapter.Confidence    `json:"confidence"`
+	Risk       string                `json:"risk,omitempty"`
+	Samples    []adapter.QuotaSample `json:"samples,omitempty"`
+}
+
 type agentInfo struct {
 	Name         string               `json:"name"`
 	Binary       string               `json:"binary"`
@@ -180,15 +190,49 @@ type agentInfo struct {
 	Installed    bool                 `json:"installed"`
 	Capabilities adapter.Capabilities `json:"capabilities"`
 	Models       []adapter.Model      `json:"models,omitempty"`
+	Quota        quotaInfo            `json:"quota"`
+}
+
+func quotaFor(a adapter.Adapter, now time.Time) quotaInfo {
+	if a.Capabilities().Usage {
+		if u, ok := a.(adapter.UsageProvider); ok {
+			return quotaInfo{Source: u.UsageSource(), Confidence: adapter.ConfidenceOfficial}
+		}
+	}
+	s := runner.EmpiricalQuota(runsStore(), a.Name(), now)
+	return quotaInfo{
+		Source:     s.Source,
+		Confidence: s.Confidence,
+		Risk:       s.Risk,
+		Samples:    []adapter.QuotaSample{s},
+	}
+}
+
+func (q quotaInfo) human() string {
+	s := fmt.Sprintf("quota: source=%s confidence=%s", q.Source, q.Confidence)
+	if q.Risk != "" {
+		s += " risk=" + q.Risk
+	}
+	if q.Confidence == adapter.ConfidenceEmpirical {
+		s += " used=unknown"
+	}
+	if len(q.Samples) == 1 && !q.Samples[0].ResetAt.IsZero() {
+		s += " resetAt=" + q.Samples[0].ResetAt.UTC().Format(time.RFC3339)
+	}
+	return s
 }
 
 func agents(args []string) {
 	fs := flag.NewFlagSet("agents", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print JSON")
 	fs.Parse(args)
+	now := time.Now()
 	var infos []agentInfo
 	for _, a := range adapter.Known() {
-		info := agentInfo{Name: a.Name(), Binary: a.Binary(), Capabilities: a.Capabilities()}
+		info := agentInfo{
+			Name: a.Name(), Binary: a.Binary(), Capabilities: a.Capabilities(),
+			Quota: quotaFor(a, now),
+		}
 		if p, err := exec.LookPath(a.Binary()); err == nil {
 			info.Installed, info.Path = true, p
 		}
@@ -211,7 +255,80 @@ func agents(args []string) {
 			mark = "+"
 		}
 		fmt.Printf("%s %-12s %s\n", mark, i.Name, i.Path)
+		fmt.Printf("  %s\n", i.Quota.human())
 	}
+}
+
+// doctorCmd prints probe results for installed CLIs. Exit 0 unless encoding fails.
+func doctorCmd(args []string) int {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(args)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	reports := adapter.Doctor(ctx)
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(reports); err != nil {
+			fmt.Fprintln(os.Stderr, "dispatch:", sandbox.Redact(err.Error()))
+			return 1
+		}
+		return 0
+	}
+	if len(reports) == 0 {
+		fmt.Println("no installed agent CLIs")
+		return 0
+	}
+	for _, r := range reports {
+		ver := r.Version
+		if ver == "" {
+			ver = "unknown"
+		}
+		fmt.Printf("%-12s %-14s %s\n", r.Name, ver, r.Status)
+		var have, miss []string
+		for _, f := range r.Flags {
+			if f.Present {
+				have = append(have, f.Name)
+			} else {
+				miss = append(miss, f.Name)
+			}
+		}
+		if len(have) > 0 {
+			fmt.Printf("  flags: %s\n", strings.Join(have, " "))
+		}
+		if len(miss) > 0 {
+			fmt.Printf("  missing: %s\n", strings.Join(miss, " "))
+		}
+		fmt.Printf("  capabilities: %s\n", formatCaps(r.Capabilities))
+		for _, n := range r.Notes {
+			fmt.Printf("  note: %s\n", sandbox.Redact(n))
+		}
+	}
+	return 0
+}
+
+func formatCaps(c adapter.Capabilities) string {
+	var parts []string
+	if c.SessionResume {
+		parts = append(parts, "sessionResume")
+	}
+	if c.StructuredOutput {
+		parts = append(parts, "structuredOutput")
+	}
+	if c.ReadOnly {
+		parts = append(parts, "readOnly")
+	}
+	if c.FileEditing {
+		parts = append(parts, "fileEditing")
+	}
+	if c.Usage {
+		parts = append(parts, "usage")
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " ")
 }
 
 // --- tiers ---

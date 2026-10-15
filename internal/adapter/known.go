@@ -15,6 +15,7 @@ func Cursor() Adapter {
 	return cliAdapter{
 		name: "cursor", binary: "cursor-agent",
 		caps:        Capabilities{SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true},
+		flags:       cursorProbeFlags,
 		listArgs:    []string{"models"},
 		parseModels: parseCursorModels,
 		newSession: func(ctx context.Context) (string, error) {
@@ -50,6 +51,7 @@ func Grok() Adapter {
 	return cliAdapter{
 		name: "grok", binary: "grok",
 		caps:        Capabilities{SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true},
+		flags:       grokProbeFlags,
 		listArgs:    []string{"models"},
 		parseModels: parseGrokModels,
 		newSession:  func(context.Context) (string, error) { return newUUID(), nil },
@@ -77,7 +79,41 @@ func Grok() Adapter {
 	}
 }
 
+var cursorProbeFlags = []probeFlag{
+	{Name: "-p"},
+	{Name: "--output-format", Capability: "structuredOutput"},
+	{Name: "--trust"},
+	{Name: "--mode", Capability: "readOnly"},
+	{Name: "--force", Capability: "fileEditing"},
+	{Name: "--sandbox"},
+	{Name: "--resume", Capability: "sessionResume"},
+	{Name: "--model"},
+	{Name: "--workspace"},
+	{Name: "create-chat"},
+}
+
+var grokProbeFlags = []probeFlag{
+	{Name: "--output-format", Capability: "structuredOutput"},
+	{Name: "--permission-mode", Capability: "readOnly"},
+	{Name: "--resume", Capability: "sessionResume"},
+	{Name: "-s"},
+	{Name: "--model"},
+	{Name: "--cwd"},
+	{Name: "-p"},
+}
+
 // Known returns the adapters dispatch knows about.
 func Known() []Adapter {
 	return []Adapter{Codex{}, Cursor(), Grok(), Antigravity{}}
 }
+
+var (
+	_ Prober        = Codex{}
+	_ Prober        = Antigravity{}
+	_ Prober        = cliAdapter{}
+	_ UsageProvider = Codex{}
+	_ UsageProvider = Antigravity{}
+	_ Resumer       = Codex{}
+	_ Resumer       = Antigravity{}
+	_ Resumer       = cliAdapter{}
+)

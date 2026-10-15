@@ -20,13 +20,15 @@ func (t Tier) Valid() bool {
 	return t == TierEasy || t == TierNormal || t == TierHard
 }
 
-// Capabilities are declared by each adapter. A request needing an
-// unsupported capability must be refused or warned, never silently ignored.
+// Capabilities are what an adapter claims. Probe checks the flags behind
+// them. A run that needs a capability the CLI does not provide is refused.
+// Usage is true only when an official quota source exists.
 type Capabilities struct {
 	SessionResume    bool `json:"sessionResume"`
 	StructuredOutput bool `json:"structuredOutput"`
 	ReadOnly         bool `json:"readOnly"`
 	FileEditing      bool `json:"fileEditing"`
+	Usage            bool `json:"usage"`
 }
 
 // Quota is a normalized usage window reported by a collector.
@@ -82,6 +84,24 @@ type Adapter interface {
 	// Quota reports current usage; return ErrNoQuota when unavailable.
 	Quota(ctx context.Context) (Quota, error)
 	Run(ctx context.Context, req Request, model string) (Result, error)
+}
+
+// Prober inspects one CLI without invoking a model.
+// Probe runs only `<binary> --version` and `<binary> --help`.
+type Prober interface {
+	Probe(ctx context.Context) ProbeReport
+}
+
+// UsageProvider is implemented by adapters with an official quota source.
+// Adapters without one must not invent a used percentage.
+type UsageProvider interface {
+	UsageSource() string
+	Usage(ctx context.Context) ([]QuotaSample, error)
+}
+
+// Resumer continues a previous session. Adapters that cannot resume omit it.
+type Resumer interface {
+	Resume(ctx context.Context, req Request, model string) (Result, error)
 }
 
 // Model is a model offered by an adapter and the tier it is declared for.
