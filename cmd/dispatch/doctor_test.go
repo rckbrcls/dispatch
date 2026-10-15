@@ -145,7 +145,7 @@ func installGoldenCLIs(t *testing.T, dir string) {
 		if err := os.WriteFile(helpPath, help, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		script := "#!/bin/sh\ncase \"$1\" in\n--version) /bin/cat '" + verPath + "' ;;\n--help) /bin/cat '" + helpPath + "' ;;\n*) echo refusing >&2; exit 97 ;;\nesac\n"
+		script := "#!/bin/sh\ncase \"$*\" in\n--version) /bin/cat '" + verPath + "' ;;\n--help|\"exec --help\") /bin/cat '" + helpPath + "' ;;\n*) echo refusing >&2; exit 97 ;;\nesac\n"
 		if err := os.WriteFile(filepath.Join(dir, bin), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}

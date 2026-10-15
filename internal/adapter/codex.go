@@ -39,13 +39,13 @@ func (Codex) Resume(ctx context.Context, req Request, model string) (Result, err
 // Flags codex exec puts on the command line. -c carries the read-only sandbox.
 var codexProbeFlags = []probeFlag{
 	{Name: "exec"},
-	{Name: "resume", Capability: "sessionResume"},
+	{Name: "resume", Capability: "sessionResume", Sub: "exec"},
 	{Name: "app-server", Capability: "usage"},
-	{Name: "--json", Capability: "structuredOutput"},
-	{Name: "--skip-git-repo-check"},
-	{Name: "-o"},
-	{Name: "-m"},
-	{Name: "-c", Capability: "readOnly"},
+	{Name: "--json", Capability: "structuredOutput", Sub: "exec"},
+	{Name: "--skip-git-repo-check", Sub: "exec"},
+	{Name: "-o", Sub: "exec"},
+	{Name: "-m", Sub: "exec"},
+	{Name: "-c", Capability: "readOnly", Sub: "exec"},
 }
 
 type rpcMsg struct {

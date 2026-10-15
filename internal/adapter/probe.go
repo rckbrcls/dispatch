@@ -46,6 +46,9 @@ type ProbeReport struct {
 type probeFlag struct {
 	Name       string
 	Capability string
+	// Sub, when set, names the subcommand whose --help lists this flag
+	// (e.g. "exec" for `codex exec --help`); empty means the top-level help.
+	Sub string
 }
 
 var versionRE = regexp.MustCompile(`v?(\d+\.\d+(?:\.\d+)?)`)
@@ -106,10 +109,22 @@ func probeBinary(ctx context.Context, name, binary string, caps Capabilities, fl
 	}
 
 	var missing []string
+	subHelp := map[string]string{"": helpOut}
+	subOK := map[string]bool{"": helpOK}
 	for _, f := range flags {
-		present := helpOK && flagPresent(helpOut, f.Name)
+		if _, seen := subHelp[f.Sub]; !seen {
+			out, err := probeOutput(ctx, binary, f.Sub, "--help")
+			subHelp[f.Sub] = out
+			subOK[f.Sub] = err == nil && strings.TrimSpace(out) != ""
+			if !subOK[f.Sub] {
+				rep.Notes = append(rep.Notes, binary+" "+f.Sub+" --help: no response")
+				helpOK = false
+			}
+		}
+		ok := subOK[f.Sub]
+		present := ok && flagPresent(subHelp[f.Sub], f.Name)
 		rep.Flags = append(rep.Flags, FlagCheck{Name: f.Name, Present: present, Capability: f.Capability})
-		if helpOK && !present {
+		if ok && !present {
 			missing = append(missing, f.Name)
 		}
 	}

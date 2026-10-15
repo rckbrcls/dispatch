@@ -151,7 +151,7 @@ func TestProbeDoesNotLeakSecret(t *testing.T) {
 	if err := os.WriteFile(help, []byte(mustRead(t, "testdata/grok/1.0.52/help.txt")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\nif [ -n \"$AWS_SECRET_ACCESS_KEY\" ]; then echo LEAKED > %q; else echo clean > %q; fi\ncase \"$1\" in\n--version) echo 'grok 1.0.52' ;;\n--help) /bin/cat %q ;;\n*) echo refusing >&2; exit 97 ;;\nesac\n", marker, marker, help)
+	script := fmt.Sprintf("#!/bin/sh\nif [ -n \"$AWS_SECRET_ACCESS_KEY\" ]; then echo LEAKED > %q; else echo clean > %q; fi\ncase \"$*\" in\n--version) echo 'grok 1.0.52' ;;\n--help) /bin/cat %q ;;\n*) echo refusing >&2; exit 97 ;;\nesac\n", marker, marker, help)
 	if err := os.WriteFile(filepath.Join(dir, "grok"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -250,9 +250,9 @@ func installProbeCLI(t *testing.T, dir, binary, versionText, helpText string) st
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 printf '%%s\n' "$*" >> %q
-case "$1" in
+case "$*" in
 --version) /bin/cat %q ;;
---help) /bin/cat %q ;;
+--help|"exec --help") /bin/cat %q ;;
 *) echo "refusing $*" >&2; exit 97 ;;
 esac
 `, logPath, verPath, helpPath)
@@ -269,7 +269,7 @@ func assertProbeOnly(t *testing.T, logPath string) {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		if line != "--version" && line != "--help" {
+		if line != "--version" && line != "--help" && line != "exec --help" {
 			t.Fatalf("probe invoked %q\nlog:\n%s", line, b)
 		}
 	}
