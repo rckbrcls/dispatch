@@ -14,6 +14,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 3 | `RunSummary` v1 + `stats` **(feita)** | 2 | P/M |
 | 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
 | 4 | Adapters (`doctor`, capabilities) + quota tipada **(feita)** | n/d (pode ir em paralelo à 3) | M |
+| 5c | Filtros explícitos: `--provider`, `--model`, `--effort`, `--agent` | 4 (capabilities) | M |
 | 5b | Prioridade `speed|balanced|quality` no roteador | 3b (dados de latência) | P/M |
 | 5 | Merge gate **(feita)** | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |
@@ -107,6 +108,31 @@ Pronto quando: `dispatch stats --by model --since 30d` e `dispatch stats --capac
 - Antes do `merge`: `git merge-tree` contra o HEAD atual, usando o código de saída e não só a lista de arquivos.
 - Merge serializado por branch alvo e reverificação depois de integrar.
 - Pronto quando: dois runs que editam o mesmo arquivo são detectados antes de tocar o working tree.
+
+## Fase 5c — Filtros explícitos no roteamento
+Hoje o chamador só diz o tier. Passa a poder restringir o espaço de busca; o roteador continua escolhendo o que sobrar por pace/rank.
+
+Vocabulário (a distinção importa): **provider** = quem serve o modelo (openai, google, xai...); **agent** = o CLI que o executa (codex, cursor, grok, antigravity); **model** e **effort** como já existem. Um mesmo modelo pode estar disponível por mais de um agent, então escolher o modelo não escolhe o agent.
+
+Flags em `run` (e campos nos perfis de subagent): `--provider`, `--model`, `--effort low|medium|high|xhigh`, `--agent`.
+
+Regra: cada filtro **restringe** os candidatos; o que não foi fixado o roteador decide.
+| Chamador fixa | Roteador decide |
+|---|---|
+| nada (só tier) | modelo, agent, effort |
+| `--provider` | melhor modelo daquele provider que caiba no tier/prioridade, agent, effort |
+| `--model` | agent (CLI) com mais folga de pace entre os que servem o modelo, e effort |
+| `--model` + `--effort` | só o agent (CLI); modelo e effort ficam exatamente como pedidos |
+| `--agent` | modelo e effort dentro daquele CLI |
+
+Detalhes:
+- **Tier opcional** quando há `--model`/`--provider`. Se vierem juntos, vale a interseção; modelo explícito fora da tabela de tiers roda mesmo assim, com `note`.
+- **Effort**: automático a partir do tier/classificador quando não informado. Como cada CLI expressa isso diferente (sufixo no nome do modelo no agy, flag/config no codex), o adapter declara em capabilities como aplica effort; effort não suportado por aquele modelo/agent é **recusado com mensagem**, nunca ignorado.
+- **Fallback respeita o filtro**: com `--model` o fallback só troca de agent que serve o mesmo modelo; com `--provider`, só de modelo do mesmo provider. Sem candidato restante, falha com erro claro (`FAILED` + motivo) em vez de rebaixar em silêncio; `--relax` opcional para permitir cair para o roteamento por tier, registrado em `note`.
+- **Provider/effort conhecidos por modelo** vêm de `tiers.json` (campos `provider`, `efforts`), validados por `tiers --check` e por `doctor`.
+- Restrições existentes continuam valendo: modelos Claude recusados em CLIs de terceiros, cooldown, `readonly`, capabilities.
+- `dispatch route` (dry-run, sem executar) mostra candidatos, o que cada filtro eliminou e por que o vencedor ganhou; os filtros aparecem no `RunSummary` (`requested` vs `resolved`) e nas agregações do `stats`.
+- Pronto quando: um teste com 2 agents servindo o mesmo modelo escolhe o agent por pace; `--provider` troca de modelo conforme tier/prioridade; `--model` + `--effort` roda sem chamar o ranking de modelo; filtro impossível falha com mensagem e sem fallback silencioso.
 
 ## Fase 5b — Prioridade de roteamento
 - `--priority speed|balanced|quality` (padrão `balanced`) em `run`, e campo `priority` nos perfis de subagent; pode ter um padrão global em `~/.dispatch`.
