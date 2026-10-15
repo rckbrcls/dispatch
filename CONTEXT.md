@@ -130,4 +130,4 @@ Comandos: `agents`, `tiers [--init|--check]`, `run` (`--tier`, `--dir`, `--reado
 ## Distribuição
 - `scripts/release.sh` compila darwin/linux × arm64/amd64 em `dist/` com `checksums.txt`; publicar com `gh release create <versão> dist/*` em rckbrcls/dispatch.
 - `scripts/install.sh` baixa o binário do último release, confere o SHA-256 e instala em `~/.local/bin` (`DISPATCH_INSTALL_DIR`, `DISPATCH_VERSION`, `DISPATCH_REPO`, `DISPATCH_BASE_URL`).
-- Uso: `curl -fsSL <url>/install.sh | sh`. A URL ainda precisa ser servida pelo portfólio (copiar `scripts/install.sh` para o `public/` dele ou redirecionar).
+- Uso: `curl -fsSL https://rckbrcls.com/api/dispatch/install | sh` (servido pelo repo portfolio em `apps/portfolio/public/api/dispatch/install`; manter em sincronia com `scripts/install.sh`).
