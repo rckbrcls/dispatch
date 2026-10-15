@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dispatch/internal/adapter"
+	"dispatch/internal/router"
 )
 
 type Profile struct {
@@ -19,6 +20,7 @@ type Profile struct {
 	Effort       string   `json:"effort,omitempty"`
 	Agent        string   `json:"agent,omitempty"`
 	Relax        bool     `json:"relax,omitempty"`
+	Priority     string   `json:"priority,omitempty"`
 	Tier         string   `json:"tier,omitempty"`
 	ReadOnly     bool     `json:"readonly,omitempty"`
 	Instructions string   `json:"instructions,omitempty"`
@@ -90,6 +92,9 @@ func Validate(name string, p Profile, known map[string]bool) []string {
 	if p.Effort != "" && !adapter.ValidEffort(p.Effort) {
 		add("invalid effort %q", p.Effort)
 	}
+	if p.Priority != "" && !router.ValidPriority(p.Priority) {
+		add("invalid priority %q (want speed|balanced|quality)", p.Priority)
+	}
 	if p.Agent != "" && !known[p.Agent] {
 		add("unknown agent %q", p.Agent)
 	}
@@ -118,7 +123,7 @@ func Validate(name string, p Profile, known map[string]bool) []string {
 			}
 		}
 	}
-	if p.Provider == "" && p.Model == "" && p.Agent == "" && p.Effort == "" && p.Instructions == "" && p.Tier == "" && len(p.Prefer) == 0 && len(p.Avoid) == 0 {
+	if p.Provider == "" && p.Model == "" && p.Agent == "" && p.Effort == "" && p.Priority == "" && p.Instructions == "" && p.Tier == "" && len(p.Prefer) == 0 && len(p.Avoid) == 0 {
 		add("empty profile")
 	}
 	return out

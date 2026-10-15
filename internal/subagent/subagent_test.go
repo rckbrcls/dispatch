@@ -41,4 +41,10 @@ func TestValidate(t *testing.T) {
 	if p := Validate("r", bad, known); len(p) != 4 {
 		t.Fatalf("problems = %v", p)
 	}
+	if p := Validate("r", Profile{Priority: "turbo"}, known); len(p) != 1 {
+		t.Fatalf("priority = %v", p)
+	}
+	if p := Validate("r", Profile{Priority: "quality"}, known); len(p) != 0 {
+		t.Fatalf("priority-only profile = %v", p)
+	}
 }

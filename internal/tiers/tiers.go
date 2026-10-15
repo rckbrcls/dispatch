@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"dispatch/internal/adapter"
 )
@@ -19,6 +21,9 @@ type Entry struct {
 	Efforts  []string `json:"efforts,omitempty"`
 	Agent    string   `json:"agent"`
 	Model    string   `json:"model"`
+	// Speed and Strength are optional 1–5 priors. Zero means absent (neutral).
+	Speed    int `json:"speed,omitempty"`
+	Strength int `json:"strength,omitempty"`
 }
 
 type Table struct {
@@ -85,7 +90,28 @@ func parse(b []byte) (Table, error) {
 			}
 		}
 	}
+	if ps := t.FieldProblems(); len(ps) > 0 {
+		return Table{}, fmt.Errorf("%s", strings.Join(ps, "; "))
+	}
 	return t, nil
+}
+
+// FieldProblems reports speed and strength values outside 1–5.
+// Zero is absent and valid. tiers --check includes this list.
+func (t Table) FieldProblems() []string {
+	var out []string
+	for tier, es := range t.Tiers {
+		for _, e := range es {
+			if e.Speed != 0 && (e.Speed < 1 || e.Speed > 5) {
+				out = append(out, fmt.Sprintf("%s: speed %d out of range 1-5", tier, e.Speed))
+			}
+			if e.Strength != 0 && (e.Strength < 1 || e.Strength > 5) {
+				out = append(out, fmt.Sprintf("%s: strength %d out of range 1-5", tier, e.Strength))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CapabilityProblems validates declared effort controls without invoking CLIs.

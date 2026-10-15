@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"dispatch/internal/adapter"
 	"dispatch/internal/pace"
+	"dispatch/internal/router"
 	"dispatch/internal/store"
 	"dispatch/internal/tiers"
 )
@@ -223,6 +225,139 @@ func TestSuffixEffortAndReadonly(t *testing.T) {
 	d.Adapters = []adapter.Adapter{a}
 	cs, why = d.selectCandidates(Options{Tier: adapter.TierEasy, ReadOnly: true})
 	if len(cs) != 0 || !strings.Contains(strings.Join(why, ";"), "readOnly") {
+		t.Fatal(cs, why)
+	}
+}
+
+func priorityDeps(t *testing.T) Deps {
+	t.Helper()
+	d, _, _ := routingDeps(t)
+	for i, a := range d.Adapters {
+		f := a.(routingFake)
+		f.quota = adapter.Quota{}
+		f.caps = adapter.Capabilities{ReadOnly: true, FileEditing: true}
+		d.Adapters[i] = f
+	}
+	d.Table = tiers.Table{Tiers: map[adapter.Tier][]tiers.Entry{
+		adapter.TierNormal: {
+			{Agent: "a", Model: "fast", Provider: "openai", Speed: 5, Strength: 1},
+			{Agent: "b", Model: "strong", Provider: "google", Speed: 1, Strength: 5},
+		},
+	}}
+	return d
+}
+
+func TestPriorityRoutesDifferentModels(t *testing.T) {
+	d := priorityDeps(t)
+	route := func(priority string) RouteReport {
+		t.Helper()
+		r, err := d.Route(context.Background(), Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: priority}})
+		if err != nil || r.Winner == nil || len(r.Candidates) != 2 {
+			t.Fatalf("%s: %+v %v", priority, r, err)
+		}
+		return r
+	}
+	speed := route(router.PrioritySpeed)
+	quality := route(router.PriorityQuality)
+	balanced := route(router.PriorityBalanced)
+	if speed.Winner.Agent != "a" || speed.Winner.Model != "fast" || !strings.Contains(speed.PriorityNote, "stays") {
+		t.Fatalf("speed %+v %s", speed.Winner, speed.PriorityNote)
+	}
+	if !strings.Contains(speed.Candidates[0].Reason, "paceSlack=") || !strings.Contains(speed.Candidates[0].Reason, "duration=") {
+		t.Fatal(speed.Candidates[0].Reason)
+	}
+	if quality.Winner.Agent != "b" || quality.Winner.Model != "strong" || !strings.Contains(quality.PriorityNote, "moved from") || !strings.Contains(quality.PriorityNote, "a/fast") {
+		t.Fatalf("quality %+v %s", quality.Winner, quality.PriorityNote)
+	}
+	if balanced.Winner.Agent != speed.Winner.Agent || balanced.Winner.Model != speed.Winner.Model || !strings.Contains(balanced.PriorityNote, "unchanged") {
+		t.Fatalf("balanced %+v %s", balanced.Winner, balanced.PriorityNote)
+	}
+	_, rejS := d.selectCandidates(Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: router.PrioritySpeed}})
+	_, rejQ := d.selectCandidates(Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: router.PriorityQuality}})
+	if strings.Join(rejS, "\n") != strings.Join(rejQ, "\n") {
+		t.Fatalf("priority filtered\n%v\n%v", rejS, rejQ)
+	}
+	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: router.PriorityQuality}, Prompt: "p", NoWorktree: true})
+	if err != nil || rec.Agent != "b" || rec.Model != "strong" {
+		t.Fatal(rec, err)
+	}
+	if rec.Requested == nil || rec.Requested.Priority != router.PriorityQuality || rec.Resolved == nil || rec.Resolved.Priority != router.PriorityQuality {
+		t.Fatalf("record %+v %+v", rec.Requested, rec.Resolved)
+	}
+	sum := Summarize(rec)
+	if sum.Requested.Priority != router.PriorityQuality || sum.Resolved.Priority != router.PriorityQuality {
+		t.Fatalf("summary %+v %+v", sum.Requested, sum.Resolved)
+	}
+}
+
+func TestMeasuredEvidenceOverridesPriorAfterMinSamples(t *testing.T) {
+	d := priorityDeps(t)
+	entries := d.Table.Tiers[adapter.TierNormal]
+	entries[0].Speed = 1
+	entries[1].Speed = 5
+	d.Table.Tiers[adapter.TierNormal] = entries
+	n := 0
+	seed := func(tier, model string, count int, ms int64) {
+		t.Helper()
+		for i := 0; i < count; i++ {
+			n++
+			err := d.Store.Append(store.Record{
+				ID: fmt.Sprintf("e-%d", n), Status: store.Completed, Tier: tier, Model: model,
+				RunMs: store.I64(ms), CreatedAt: d.Now(), FinishedAt: d.Now(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed("hard", "fast", 8, 1000)
+	winner := func() string {
+		t.Helper()
+		r, err := d.Route(context.Background(), Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: router.PrioritySpeed}})
+		if err != nil || r.Winner == nil {
+			t.Fatal(err, r)
+		}
+		return r.Winner.Model
+	}
+	if winner() != "strong" {
+		t.Fatal("hard-tier samples changed the easy/normal prior")
+	}
+	seed("normal", "fast", 4, 1000)
+	seed("normal", "strong", 4, 600000)
+	if winner() != "strong" {
+		t.Fatal("prior overridden before min samples")
+	}
+	seed("normal", "fast", 1, 1000)
+	seed("normal", "strong", 1, 600000)
+	r, err := d.Route(context.Background(), Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: router.PrioritySpeed}})
+	if err != nil || r.Winner == nil || r.Winner.Model != "fast" || !strings.Contains(r.Candidates[0].Reason, "blended") {
+		t.Fatalf("%+v %v", r.Winner, r.Candidates)
+	}
+}
+
+func TestPriorityDoesNotBypassConstraints(t *testing.T) {
+	d := priorityDeps(t)
+	if err := d.Store.SetCooldown("a", d.Now().Add(time.Hour), d.Now()); err != nil {
+		t.Fatal(err)
+	}
+	cs, why := d.selectCandidates(Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: router.PrioritySpeed}})
+	if len(cs) != 1 || cs[0].Adapter.Name() != "b" || !strings.Contains(strings.Join(why, ";"), "cooldown") {
+		t.Fatal(cs, why)
+	}
+	d = priorityDeps(t)
+	cs, why = d.selectCandidates(Options{Tier: adapter.TierNormal, Filters: store.Filters{Priority: router.PrioritySpeed, Provider: "google"}})
+	if len(cs) != 1 || cs[0].Model != "strong" || !strings.Contains(strings.Join(why, ";"), "provider filter") {
+		t.Fatal(cs, why)
+	}
+	a := d.Adapters[0].(routingFake)
+	a.caps.ReadOnly = false
+	d.Adapters[0] = a
+	row := d.Table.Tiers[adapter.TierNormal]
+	row[0].Strength = 5
+	row[1].Strength = 1
+	d.Table.Tiers[adapter.TierNormal] = row
+	cs, why = d.selectCandidates(Options{Tier: adapter.TierNormal, ReadOnly: true, Filters: store.Filters{Priority: router.PriorityQuality}})
+	if len(cs) != 1 || cs[0].Adapter.Name() != "b" || !strings.Contains(strings.Join(why, ";"), "readOnly") {
 		t.Fatal(cs, why)
 	}
 }

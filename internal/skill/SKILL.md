@@ -102,6 +102,9 @@ Cada filtro restringe o fallback; sem candidato, falha. `--relax` permite voltar
 Tier é opcional com provider/model; se informado, vale a interseção. Effort incompatível é recusado.
 `dispatch route [mesmos filtros] [--json]` explica candidatos/eliminações/vencedor usando quota em cache, sem executar.
 O resumo expõe `requested`/`resolved`; `stats --by requested|resolved` agrega esses campos.
+`--priority speed|balanced|quality` (padrão `balanced`; a flag vence o `priority` do perfil e o de `~/.dispatch/config.json`) só muda pesos dentro do conjunto elegível.
+`speed` pondera p50 e folga de pace; `quality` pondera sucesso `verification=verified` e `strength`. Não fura tier, filtro, capability, cooldown nem readonly.
+`tiers.json` aceita `speed` e `strength` (1–5; ausente = neutro). Com ≥5 amostras no mesmo tier a medição mistura com o prior (`n/(n+5)`); `route` mostra os termos e se o vencedor mudou.
 
 ## Flags úteis
 

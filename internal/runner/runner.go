@@ -1,5 +1,5 @@
-// Package runner executes a tiered request: pick candidates, rank by pace,
-// fall back on failure, and persist the lifecycle.
+// Package runner executes a tiered request: pick candidates, rank by pace
+// and optional priority weights, fall back on failure, and persist the lifecycle.
 package runner
 
 import (
@@ -19,6 +19,7 @@ import (
 	"dispatch/internal/pace"
 	"dispatch/internal/router"
 	"dispatch/internal/sandbox"
+	"dispatch/internal/stats"
 	"dispatch/internal/store"
 	"dispatch/internal/tiers"
 	"dispatch/internal/verify"
@@ -94,7 +95,10 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 }
 
 func (d Deps) evaluate(ctx context.Context, cs []router.Candidate, live bool) []router.Candidate {
+	return router.Rank(d.observe(ctx, cs, live))
+}
 
+func (d Deps) observe(ctx context.Context, cs []router.Candidate, live bool) []router.Candidate {
 	// One quota fetch per agent, in parallel; ModelQuoter adapters resolve
 	// per model, others share one quota across their models.
 	byAgent := map[string][]int{}
@@ -182,7 +186,26 @@ func (d Deps) evaluate(ctx context.Context, cs []router.Candidate, live bool) []
 			}
 		}
 	}
-	return router.Rank(cs)
+	d.attachEvidence(cs)
+	return cs
+}
+
+// attachEvidence copies tier-segmented measurements onto candidates.
+// A read error leaves the static prior in place.
+func (d Deps) attachEvidence(cs []router.Candidate) {
+	if d.Store.Path == "" {
+		return
+	}
+	recs, err := d.Store.List()
+	if err != nil || len(recs) == 0 {
+		return
+	}
+	ev := stats.EvidenceByTierModel(recs)
+	for i := range cs {
+		if e, ok := ev[stats.EvidenceKey(cs[i].Tier, cs[i].Model)]; ok {
+			cs[i].Evidence = e
+		}
+	}
 }
 
 // block probes the CLI when it can. DEGRADED still runs and returns a note
@@ -244,6 +267,9 @@ func missingFlags(r adapter.ProbeReport, capability string) []string {
 func (d Deps) Begin(o Options) (store.Record, error) {
 	if os.Getenv(depthEnv) != "" || os.Getenv(noDelegateEnv) != "" {
 		return store.Record{}, ErrRecursive
+	}
+	if err := normalizePriority(&o); err != nil {
+		return store.Record{}, err
 	}
 	rec := store.Record{
 		PID: os.Getpid(), ProcStart: processStart(context.Background(), os.Getpid()),
@@ -375,11 +401,14 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if rec.Requested != nil {
 			o.Filters = *rec.Requested
 		}
+		if o.Filters.Priority == "" {
+			o.Filters.Priority = router.PriorityBalanced
+		}
 		cands, rejected = d.selectCandidates(o)
 		cands = d.evaluate(ctx, cands, true)
 		if o.Filters.Relax {
 			fallback := o
-			fallback.Filters = store.Filters{}
+			fallback.Filters = store.Filters{Priority: o.Filters.Priority}
 			if fallback.Tier == "" {
 				fallback.Tier = adapter.TierNormal
 			}
@@ -452,7 +481,14 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if rec.Effort == "" {
 			rec.Effort = EffortOf(rec.Model)
 		}
-		rec.Resolved = &store.Filters{Provider: rec.Provider, Model: rec.Model, Agent: rec.Agent, Effort: rec.Effort}
+		prio := c.Priority
+		if prio == "" && rec.Requested != nil {
+			prio = rec.Requested.Priority
+		}
+		if prio == "" {
+			prio = router.PriorityBalanced
+		}
+		rec.Resolved = &store.Filters{Provider: rec.Provider, Model: rec.Model, Agent: rec.Agent, Effort: rec.Effort, Priority: prio}
 		rec.Note = joinNote(rec.Note, c.Note)
 		if err := d.Store.Append(rec); err != nil {
 			return rec, err

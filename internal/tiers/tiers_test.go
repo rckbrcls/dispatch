@@ -3,6 +3,7 @@ package tiers
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"dispatch/internal/adapter"
@@ -45,5 +46,31 @@ func TestProviderEffortsCompatibility(t *testing.T) {
 	table.Tiers[adapter.TierEasy][0].Agent = "grok"
 	if len(table.CapabilityProblems(adapter.Known())) == 0 {
 		t.Fatal("effort accepted for CLI without control")
+	}
+}
+
+func TestSpeedAndStrength(t *testing.T) {
+	table, err := parse([]byte(`{"tiers":{"easy":[{"agent":"codex","model":"gpt-small","speed":5,"strength":1}]}}`))
+	if err != nil || table.Tiers[adapter.TierEasy][0].Speed != 5 || table.Tiers[adapter.TierEasy][0].Strength != 1 {
+		t.Fatal(err, table)
+	}
+	if len(table.FieldProblems()) != 0 {
+		t.Fatal(table.FieldProblems())
+	}
+	for _, body := range []string{
+		`{"tiers":{"easy":[{"agent":"codex","model":"gpt-small","speed":6}]}}`,
+		`{"tiers":{"easy":[{"agent":"codex","model":"gpt-small","strength":-1}]}}`,
+	} {
+		if _, err := parse([]byte(body)); err == nil || !strings.Contains(err.Error(), "out of range") {
+			t.Fatal("accepted", body, err)
+		}
+	}
+	omitted, err := parse([]byte(`{"tiers":{"easy":[{"agent":"codex","model":"gpt-small"}]}}`))
+	if err != nil || omitted.Tiers[adapter.TierEasy][0].Speed != 0 || omitted.Tiers[adapter.TierEasy][0].Strength != 0 {
+		t.Fatal(err, omitted)
+	}
+	hand := Table{Tiers: map[adapter.Tier][]Entry{adapter.TierHard: {{Agent: "a", Model: "m", Speed: 9, Strength: 0}}}}
+	if len(hand.FieldProblems()) != 1 {
+		t.Fatal(hand.FieldProblems())
 	}
 }
