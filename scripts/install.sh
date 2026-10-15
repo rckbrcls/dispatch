@@ -1,8 +1,8 @@
 #!/bin/sh
 # Instala o dispatch: baixa o binário do GitHub Releases, confere o SHA-256
 # e instala em $DISPATCH_INSTALL_DIR (padrão ~/.local/bin).
-#   curl -fsSL <url>/install.sh | sh
-#   curl -fsSL <url>/install.sh | DISPATCH_VERSION=v0.1.0 sh
+#   curl -fsSL https://rckbrcls.com/api/dispatch/install | sh
+#   curl -fsSL https://rckbrcls.com/api/dispatch/install | DISPATCH_VERSION=v0.1.0 sh
 set -eu
 
 REPO="${DISPATCH_REPO:-rckbrcls/dispatch}"
