@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"dispatch/internal/sandbox"
 )
 
 // Antigravity drives the Antigravity CLI (agy). Effort is part of the model
@@ -59,6 +61,7 @@ func (Antigravity) ModelQuotas(ctx context.Context, models []string) (map[string
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "agy", "-p", "/usage", "--output-format", "json")
+	cmd.Env = sandbox.Environ()
 	ownGroup(cmd)
 	var out bytes.Buffer
 	cmd.Stdout = &out

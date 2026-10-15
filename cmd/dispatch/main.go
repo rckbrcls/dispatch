@@ -17,6 +17,7 @@ import (
 
 	"dispatch/internal/adapter"
 	"dispatch/internal/runner"
+	"dispatch/internal/sandbox"
 	"dispatch/internal/skill"
 	"dispatch/internal/store"
 	"dispatch/internal/subagent"
@@ -98,7 +99,7 @@ func fatalUsage(msg string) {
 }
 
 func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "dispatch:", err)
+	fmt.Fprintln(os.Stderr, "dispatch:", sandbox.Redact(err.Error()))
 	os.Exit(1)
 }
 
@@ -338,6 +339,9 @@ func run(args []string) int {
 		rec, err = d.Execute(ctx, rec)
 		if err != nil {
 			fatal(err)
+		}
+		if rec.Output != "" {
+			fmt.Fprintln(os.Stdout, sandbox.Redact(rec.Output))
 		}
 		return exitCode(rec.Status)
 	}

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"dispatch/internal/sandbox"
 )
 
 type Status string
@@ -71,6 +73,12 @@ func NewID() string {
 }
 
 func (s Store) Append(r Record) error {
+	r.Output = sandbox.Redact(r.Output)
+	r.Error = sandbox.Redact(r.Error)
+	r.Note = sandbox.Redact(r.Note)
+	for i := range r.Attempts {
+		r.Attempts[i].Error = sandbox.Redact(r.Attempts[i].Error)
+	}
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
 		return err
 	}

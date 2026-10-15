@@ -48,6 +48,8 @@ type Request struct {
 	Timeout  time.Duration
 	// ResumeSession continues a previous session of the same adapter.
 	ResumeSession string
+	// Env passes a sanitized environment to the child agent subprocess.
+	Env []string
 }
 
 // Result is the raw outcome of a run, before compaction.

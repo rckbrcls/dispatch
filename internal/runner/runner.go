@@ -19,12 +19,18 @@ import (
 	"dispatch/internal/adapter"
 	"dispatch/internal/pace"
 	"dispatch/internal/router"
+	"dispatch/internal/sandbox"
 	"dispatch/internal/store"
 	"dispatch/internal/tiers"
 	"dispatch/internal/worktree"
 )
 
-const depthEnv = "DISPATCH_DEPTH"
+const (
+	depthEnv       = "DISPATCH_DEPTH"
+	noDelegateEnv  = "DISPATCH_NO_DELEGATE"
+	runIDEnv       = "DISPATCH_RUN_ID"
+	parentRunIDEnv = "DISPATCH_PARENT_RUN_ID"
+)
 
 var ErrRecursive = errors.New("refusing recursive delegation (DISPATCH_DEPTH set)")
 
@@ -172,7 +178,7 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 
 // Begin validates the request and persists a PENDING record.
 func (d Deps) Begin(o Options) (store.Record, error) {
-	if os.Getenv(depthEnv) != "" {
+	if os.Getenv(depthEnv) != "" || os.Getenv(noDelegateEnv) != "" {
 		return store.Record{}, ErrRecursive
 	}
 	rec := store.Record{
@@ -212,18 +218,32 @@ func (d Deps) Run(ctx context.Context, o Options) (store.Record, error) {
 
 // Execute runs a record created by Begin and returns its final state.
 func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, error) {
-	if os.Getenv(depthEnv) != "" {
+	if os.Getenv(depthEnv) != "" || os.Getenv(noDelegateEnv) != "" {
 		return rec, ErrRecursive
 	}
-	os.Setenv(depthEnv, "1") // inherited by every agent subprocess
-	defer os.Unsetenv(depthEnv)
 	rec.PID = os.Getpid()
 	timeout := time.Duration(rec.TimeoutSec) * time.Second
 
 	finish := func(s store.Status, msg string) (store.Record, error) {
 		rec.Status, rec.Error, rec.FinishedAt = s, msg, d.Now()
+		rec.Output = sandbox.Redact(rec.Output)
+		rec.Error = sandbox.Redact(rec.Error)
+		rec.Note = sandbox.Redact(rec.Note)
+		for i := range rec.Attempts {
+			rec.Attempts[i].Error = sandbox.Redact(rec.Attempts[i].Error)
+		}
 		return rec, d.Store.Append(rec)
 	}
+
+	extra := []string{
+		depthEnv + "=1",
+		runIDEnv + "=" + rec.ID,
+		noDelegateEnv + "=1",
+	}
+	if parent := os.Getenv(runIDEnv); parent != "" {
+		extra = append(extra, parentRunIDEnv+"="+parent)
+	}
+	childEnv := sandbox.Environ(extra...)
 
 	dir := rec.Dir
 	if dir == "" {
@@ -282,7 +302,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		}
 		res, err := c.Adapter.Run(ctx, adapter.Request{
 			Prompt: rec.Prompt, Tier: adapter.Tier(rec.Tier), Dir: dir, ReadOnly: rec.ReadOnly,
-			Timeout: timeout, ResumeSession: resumeSession,
+			Timeout: timeout, ResumeSession: resumeSession, Env: childEnv,
 		}, c.Model)
 		rec.ExitCode, rec.SessionID = res.ExitCode, res.SessionID
 		switch {
