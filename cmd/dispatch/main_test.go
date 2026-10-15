@@ -402,6 +402,65 @@ func TestVerificationViewAndNotes(t *testing.T) {
 	}
 }
 
+func TestResultSummaryHidesAgentText(t *testing.T) {
+	setupTestEnv(t)
+	rec := store.Record{
+		ID: "sum1", Status: store.Completed, Agent: "codex", Model: "gpt-5.6-terra",
+		Tier: "normal", Output: "AGENT_FREE_TEXT_XYZ", Verification: "verified",
+	}
+	if err := runsStore().Append(rec); err != nil {
+		t.Fatal(err)
+	}
+	summary := captureStdout(t, func() {
+		if code := result([]string{"--section", "summary", "sum1"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if strings.Contains(summary, "AGENT_FREE_TEXT_XYZ") || !strings.Contains(summary, "dispatch.run-summary.v1") {
+		t.Fatal(summary)
+	}
+	human := captureStdout(t, func() {
+		if code := result([]string{"--json=false", "--section", "summary", "sum1"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if strings.Count(human, "\n") != 3 || strings.Contains(human, "AGENT_FREE_TEXT_XYZ") {
+		t.Fatalf("%q", human)
+	}
+	agent := captureStdout(t, func() {
+		if code := result([]string{"--section", "agent", "--offset", "0", "--limit", "10", "sum1"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if !strings.Contains(agent, "AGENT_FREE_TEXT_XYZ") {
+		t.Fatal(agent)
+	}
+	out := captureStdout(t, func() {
+		if code := result([]string{"--section", "output", "sum1"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if !strings.Contains(out, "AGENT_FREE_TEXT_XYZ") {
+		t.Fatal(out)
+	}
+	files := captureStdout(t, func() {
+		if code := result([]string{"--section", "files", "sum1"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if !strings.Contains(files, "desconhecido") {
+		t.Fatal(files)
+	}
+	statsOut := captureStdout(t, func() {
+		if code := statsCmd([]string{"--since", "all", "--json"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if !strings.Contains(statsOut, "dispatch.stats.v1") || !strings.Contains(statsOut, "desconhecido") {
+		t.Fatal(statsOut)
+	}
+}
+
 func TestVerifyInit(t *testing.T) {
 	setupTestEnv(t)
 	root := t.TempDir()

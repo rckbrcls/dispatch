@@ -20,6 +20,7 @@ import (
 	"dispatch/internal/runner"
 	"dispatch/internal/sandbox"
 	"dispatch/internal/skill"
+	"dispatch/internal/stats"
 	"dispatch/internal/store"
 	"dispatch/internal/subagent"
 	"dispatch/internal/tiers"
@@ -42,11 +43,12 @@ const usageText = `usage:
   dispatch agents [--json]
   dispatch tiers [--init | --check]
   dispatch run --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
-               [--background] [--no-worktree] [--no-verify] <prompt | ->
+               [--background] [--no-worktree] [--no-verify] [--json] <prompt | ->
   dispatch run --as <subagent> [flags] <prompt | ->   (profile from agents.json)
   dispatch subagents [--init | --check]
   dispatch run --resume <id> [--background] <follow-up prompt | ->
-  dispatch wait <id> [--timeout 10m]
+  dispatch wait <id> [--timeout 10m] [--json]
+  dispatch stats [--by model|agent|provider|tier|effort|day|week] [--since 7d] [--json] [--capacity]
   dispatch list [--status S] [--limit N]
   dispatch cancel <id>
   dispatch recover <id>   (ORPHANED worktree; commits preserved changes)
@@ -57,7 +59,7 @@ const usageText = `usage:
   dispatch skill install [--agent claude,codex,cursor,grok,antigravity|all] [--force]
   dispatch skill show
   dispatch skill refresh   (rewrite already-installed skill copies)
-  dispatch result <id> [--section output|meta|attempts|verification] [--offset N] [--limit N]
+  dispatch result <id> [--section summary|verification|files|agent|attempts|meta|output] [--offset N] [--limit N] [--json]
 
 state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json, baselines/`
 
@@ -89,6 +91,8 @@ func main() {
 		os.Exit(result(args))
 	case "wait":
 		os.Exit(wait(args))
+	case "stats":
+		os.Exit(statsCmd(args))
 	case "list":
 		os.Exit(list(args))
 	case "cancel":
@@ -147,6 +151,24 @@ func printJSON(v any) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.Encode(v)
+}
+
+func printCompact(v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		fatal(err)
+	}
+	fmt.Println(string(b))
+}
+
+// emitSummary prints the RunSummary. JSON is the default; --json=false is three lines.
+func emitSummary(rec store.Record, asJSON bool) {
+	sum := runner.Summarize(rec)
+	if asJSON {
+		printCompact(sum)
+		return
+	}
+	fmt.Print(sum.Text())
 }
 
 // --- agents ---
@@ -415,6 +437,7 @@ func run(args []string) int {
 	resume := fs.String("resume", "", "continue the session of an earlier run id")
 	as := fs.String("as", "", "subagent profile from agents.json (explicit flags override it)")
 	execID := fs.String("exec", "", "internal: execute a pre-created run")
+	asJSON := fs.Bool("json", true, "compact RunSummary JSON; --json=false prints 3 lines")
 	words := parseInterspersed(fs, args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -430,9 +453,7 @@ func run(args []string) int {
 		if err != nil {
 			fatal(err)
 		}
-		if rec.Output != "" {
-			fmt.Fprintln(os.Stdout, sandbox.Redact(rec.Output))
-		}
+		printCompact(runner.Summarize(rec))
 		return exitCode(rec.Status)
 	}
 
@@ -471,7 +492,7 @@ func run(args []string) int {
 	if err != nil && rec.ID == "" {
 		fatal(err)
 	}
-	printJSON(view(rec))
+	emitSummary(rec, *asJSON)
 	return exitCode(rec.Status)
 }
 
@@ -517,6 +538,7 @@ func spawnDetached(id string) error {
 func wait(args []string) int {
 	fs := flag.NewFlagSet("wait", flag.ExitOnError)
 	timeout := fs.Duration("timeout", 0, "give up after this long (0 = no limit)")
+	asJSON := fs.Bool("json", true, "compact RunSummary JSON; --json=false prints 3 lines")
 	pos := parseInterspersed(fs, args)
 	if len(pos) != 1 {
 		fatalUsage("wait needs one run id")
@@ -532,11 +554,47 @@ func wait(args []string) int {
 	if err != nil && rec.ID == "" {
 		fatal(err)
 	}
-	printJSON(view(rec))
+	emitSummary(rec, *asJSON)
 	if err != nil { // still running when we stopped waiting
 		return 3
 	}
 	return exitCode(rec.Status)
+}
+
+func statsCmd(args []string) int {
+	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	by := fs.String("by", "model", "model|agent|provider|tier|effort|day|week")
+	since := fs.String("since", "7d", "window such as 7d, 24h, 30m, 2w, or all")
+	asJSON := fs.Bool("json", false, "print JSON")
+	capacity := fs.Bool("capacity", false, "quota windows from snapshots.jsonl")
+	fs.Parse(args)
+	now := time.Now()
+	start, err := stats.ParseSince(*since, now)
+	if err != nil {
+		fatal(err)
+	}
+	if *capacity {
+		rep, err := stats.CapacityFromStore(runsStore(), start, now)
+		if err != nil {
+			fatal(err)
+		}
+		if *asJSON {
+			printCompact(rep)
+		} else {
+			fmt.Print(rep.Text())
+		}
+		return 0
+	}
+	rep, err := stats.FromStore(runsStore(), stats.Options{By: *by, Since: start, Now: now})
+	if err != nil {
+		fatal(err)
+	}
+	if *asJSON {
+		printCompact(rep)
+	} else {
+		fmt.Print(rep.Text())
+	}
+	return 0
 }
 
 func list(args []string) int {
@@ -736,7 +794,7 @@ func verifyCmd(args []string) int {
 	rec.Verification = string(res.Status)
 	rec.VerifyMs = res.DurationMs
 	if rec.Status == store.Completed || rec.Status == store.Failed || rec.Status == store.TimedOut || rec.Status == store.Cancelled {
-		rec.ExitClass = runner.ExitClass(rec.Status, rec.Verification)
+		rec.ExitClass = runner.Classify(rec)
 	}
 	if err != nil {
 		rec.Note = joinNotes(rec.Note, "verification: "+err.Error())
@@ -789,9 +847,10 @@ func result(args []string) int {
 		fatal(err)
 	}
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
-	section := fs.String("section", "output", "output|meta|attempts|verification")
-	offset := fs.Int("offset", 0, "first line")
+	section := fs.String("section", "summary", "summary|verification|files|agent|attempts|meta|output")
+	offset := fs.Int("offset", 0, "first line of agent or verification text")
 	limit := fs.Int("limit", 200, "max lines (0 = all)")
+	asJSON := fs.Bool("json", true, "with --section summary, --json=false prints 3 lines")
 	pos := parseInterspersed(fs, args)
 	if len(pos) != 1 {
 		fatalUsage("result needs one run id")
@@ -801,12 +860,20 @@ func result(args []string) int {
 		fatal(fmt.Errorf("%s: %w", pos[0], err))
 	}
 	switch *section {
-	case "output":
+	case "summary":
+		if *asJSON {
+			printJSON(runner.Summarize(rec))
+		} else {
+			fmt.Print(runner.Summarize(rec).Text())
+		}
+	case "agent", "output":
 		content, total, more := runner.Page(rec.Output, *offset, *limit)
 		printJSON(map[string]any{
-			"id": rec.ID, "status": rec.Status, "section": "output",
+			"id": rec.ID, "status": rec.Status, "section": *section,
 			"offset": *offset, "limit": *limit, "totalLines": total, "hasMore": more, "content": content,
 		})
+	case "files":
+		printJSON(filesView(rec))
 	case "attempts":
 		printJSON(map[string]any{"id": rec.ID, "status": rec.Status, "attempts": rec.Attempts})
 	case "meta":
@@ -829,6 +896,31 @@ func result(args []string) int {
 		fatalUsage("unknown section " + *section)
 	}
 	return 0
+}
+
+func filesView(rec store.Record) map[string]any {
+	m := map[string]any{"id": rec.ID, "status": rec.Status, "section": "files"}
+	var unknown []string
+	if rec.FilesChanged == nil {
+		unknown = append(unknown, "filesChanged")
+	} else {
+		m["filesChanged"] = *rec.FilesChanged
+	}
+	if rec.Insertions == nil {
+		unknown = append(unknown, "insertions")
+	} else {
+		m["insertions"] = *rec.Insertions
+	}
+	if rec.Deletions == nil {
+		unknown = append(unknown, "deletions")
+	} else {
+		m["deletions"] = *rec.Deletions
+	}
+	if len(unknown) > 0 {
+		m["unknown"] = unknown
+		m["availability"] = "desconhecido"
+	}
+	return m
 }
 
 // --- skill ---

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -144,6 +145,47 @@ func Rel(root, dir string) string {
 
 // Head returns the commit used as the base of a new worktree.
 func Head(path string) (string, error) { return git(path, "rev-parse", "HEAD") }
+
+// NumStat counts changes from base to the working tree (committed and not).
+// linesKnown is false when a binary file hides the line counts; the file
+// count is still valid. An error leaves every count unknown to the caller.
+func NumStat(dir, base string) (files, insertions, deletions int, linesKnown bool, err error) {
+	if base == "" {
+		return 0, 0, 0, false, fmt.Errorf("no base")
+	}
+	out, err := git(dir, "diff", "--numstat", base)
+	if err != nil {
+		return 0, 0, 0, false, err
+	}
+	linesKnown = true
+	if out == "" {
+		return 0, 0, 0, true, nil
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		files++
+		if parts[0] == "-" || parts[1] == "-" {
+			linesKnown = false
+			continue
+		}
+		add, e1 := strconv.Atoi(parts[0])
+		sub, e2 := strconv.Atoi(parts[1])
+		if e1 != nil || e2 != nil {
+			linesKnown = false
+			continue
+		}
+		insertions += add
+		deletions += sub
+	}
+	return files, insertions, deletions, linesKnown, nil
+}
 
 // Recover checks the run branch before committing and reporting its diff.
 func Recover(path, branch, base, id string) (string, error) {

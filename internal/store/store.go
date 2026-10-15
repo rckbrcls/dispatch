@@ -4,13 +4,17 @@ package store
 
 import (
 	"bufio"
+	"compress/gzip"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"dispatch/internal/sandbox"
@@ -30,9 +34,11 @@ const (
 )
 
 type Attempt struct {
-	Agent string `json:"agent"`
-	Model string `json:"model"`
-	Error string `json:"error"`
+	Agent      string `json:"agent"`
+	Model      string `json:"model"`
+	Error      string `json:"error"`
+	DurationMs *int64 `json:"durationMs,omitempty"`
+	ExitClass  string `json:"exitClass,omitempty"` // rate_limit|crash|merge_conflict|failed
 }
 
 type Record struct {
@@ -41,6 +47,8 @@ type Record struct {
 	Tier         string         `json:"tier"`
 	Agent        string         `json:"agent,omitempty"`
 	Model        string         `json:"model,omitempty"`
+	Provider     string         `json:"provider,omitempty"`
+	Effort       string         `json:"effort,omitempty"` // suffix of the model name; absent = unknown
 	Prompt       string         `json:"prompt"`
 	Dir          string         `json:"dir,omitempty"`
 	ReadOnly     bool           `json:"readOnly"`
@@ -68,9 +76,43 @@ type Record struct {
 	Verification string         `json:"verification,omitempty"` // verified|verification_failed|unverified|error
 	Verify       *verify.Result `json:"verify,omitempty"`
 	VerifyMs     int64          `json:"verifyMs,omitempty"`
-	ExitClass    string         `json:"exitClass,omitempty"` // ok|verify_fail|timeout|cancelled|failed
+	QueuedMs     *int64         `json:"queuedMs,omitempty"` // nil = unknown, never a sentinel zero
+	RunMs        *int64         `json:"runMs,omitempty"`
+	FilesChanged *int           `json:"filesChanged,omitempty"`
+	Insertions   *int           `json:"insertions,omitempty"`
+	Deletions    *int           `json:"deletions,omitempty"`
+	ExitClass    string         `json:"exitClass,omitempty"` // ok|verify_fail|timeout|cancelled|failed|rate_limit|crash|merge_conflict
 	CreatedAt    time.Time      `json:"createdAt"`
 	FinishedAt   time.Time      `json:"finishedAt,omitzero"`
+}
+
+// I64 returns a pointer so a known zero is stored and stays distinct from absent.
+func I64(n int64) *int64 { return &n }
+
+// I returns a pointer so a known zero is stored and stays distinct from absent.
+func I(n int) *int { return &n }
+
+// ObservedMs is the run duration when it is known: RunMs, else the span from
+// StartedAt or CreatedAt to FinishedAt. The boolean is false when nothing was recorded.
+func (r Record) ObservedMs() (int64, bool) {
+	if r.RunMs != nil {
+		return *r.RunMs, true
+	}
+	if !r.StartedAt.IsZero() && !r.FinishedAt.IsZero() {
+		return nonNegMs(r.FinishedAt.Sub(r.StartedAt)), true
+	}
+	if !r.CreatedAt.IsZero() && !r.FinishedAt.IsZero() {
+		return nonNegMs(r.FinishedAt.Sub(r.CreatedAt)), true
+	}
+	return 0, false
+}
+
+func nonNegMs(d time.Duration) int64 {
+	ms := d.Milliseconds()
+	if ms < 0 {
+		return 0
+	}
+	return ms
 }
 
 type Store struct{ Path string }
@@ -99,6 +141,9 @@ func (s Store) Append(r Record) error {
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
+		return err
+	}
+	if err := s.rotate(); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(s.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -153,23 +198,128 @@ func (s Store) List() ([]Record, error) {
 	return out, nil
 }
 
-func (s Store) latest() (map[string]Record, error) {
-	f, err := os.Open(s.Path)
+// rotateBytes is the runs.jsonl size that triggers gzip rotation.
+// Tests lower it; the default is 5 MiB.
+var rotateBytes int64 = 5 << 20
+
+// rotate gzips runs.jsonl once it reaches rotateBytes. The archived name is
+// "<path>.<UTC stamp>Z.gz". Readers must open those files too.
+func (s Store) rotate() error {
+	st, err := os.Stat(s.Path)
+	if err != nil || st.Size() < rotateBytes {
+		return nil
+	}
+	stamp := time.Now().UTC().Format("20060102-150405") + "Z"
+	dest := s.Path + "." + stamp + ".gz"
+	for n := 1; ; n++ {
+		if _, err := os.Stat(dest); os.IsNotExist(err) {
+			break
+		}
+		if n > 1000 {
+			return fmt.Errorf("rotate %s: too many files", s.Path)
+		}
+		dest = fmt.Sprintf("%s.%s.%d.gz", s.Path, stamp, n)
+	}
+	in, err := os.Open(s.Path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dest + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	gz := gzip.NewWriter(out)
+	if _, err := io.Copy(gz, in); err != nil {
+		gz.Close()
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Remove(s.Path)
+}
+
+// historyPaths returns rotated gzip archives oldest-first, then the live file.
+func (s Store) historyPaths() ([]string, error) {
+	dir := filepath.Dir(s.Path)
+	base := filepath.Base(s.Path)
+	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return map[string]Record{}, nil
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	out := map[string]Record{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	for sc.Scan() {
-		var r Record
-		if json.Unmarshal(sc.Bytes(), &r) == nil && r.ID != "" {
-			out[r.ID] = r
+	var rotated []string
+	for _, e := range entries {
+		name := e.Name()
+		if name == base || e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(name, base+".") && strings.HasSuffix(name, ".gz") {
+			rotated = append(rotated, filepath.Join(dir, name))
 		}
 	}
-	return out, sc.Err()
+	sort.Strings(rotated)
+	if _, err := os.Stat(s.Path); err == nil {
+		rotated = append(rotated, s.Path)
+	}
+	return rotated, nil
+}
+
+func (s Store) latest() (map[string]Record, error) {
+	paths, err := s.historyPaths()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Record{}
+	for _, p := range paths {
+		if err := readRecords(p, func(r Record) { out[r.ID] = r }); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func readRecords(path string, fn func(Record)) error {
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var r io.Reader = f
+	if strings.HasSuffix(path, ".gz") {
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return err
+		}
+		defer gz.Close()
+		r = gz
+	}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		var rec Record
+		if json.Unmarshal(sc.Bytes(), &rec) == nil && rec.ID != "" {
+			fn(rec)
+		}
+	}
+	return sc.Err()
 }

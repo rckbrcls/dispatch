@@ -36,7 +36,7 @@ BRIEF
    Imprime JSON com o `id` na hora. O brief leva **caminhos, nunca código colado**.
 2. **Espere:** `dispatch wait <id> --timeout 9m`. Exit 3 = ainda rodando: chame `wait` de novo.
    Não encerre o turno com runs pendentes.
-3. **Leia o JSON** (veja abaixo), confira `git -C <worktree> diff --stat` e rode os testes. Não leia o
+3. **Leia o RunSummary** (JSON compacto; o texto do agente fica em `dispatch result <id> --section agent`), confira `git -C <worktree> diff --stat` e rode os testes. Não leia o
    código escrito na íntegra.
 4. **Integre:** `dispatch merge <id>` (só com `COMPLETED`). `verification_failed` recusa o merge até `--force` e lista as regressões. `unverified` e `error` avisam e ainda mesclam. Falhou o run? `dispatch clean <id>`.
 
@@ -50,22 +50,21 @@ depois um `wait` por id. Duas escritas no mesmo `--dir` com `--no-worktree` conf
 
 ## Resultado
 
-O `run`/`wait` imprime JSON: `id`, `status` (`COMPLETED|FAILED|TIMED_OUT|CANCELLED|ORPHANED`), `agent`, `model`,
-`summary` (primeiras ~40 linhas), `truncated`, `totalLines`, e quando existem: `error`, `note`,
-`branch`, `worktree`, `sessionId`, `attempts` (nº de tentativas), `resumedOf`.
+`run` e `wait` imprimem um RunSummary (`dispatch.run-summary.v1`): `status`, `agent`, `model`, `tier`,
+`durationMs`, arquivos e +/-, `verification` (só o status), `attempts`, `branch`, `worktree` e ponteiros
+em `details`. O texto livre do agente não vem nesse JSON. `--json=false` imprime 3 linhas; o padrão é o JSON.
 
-- `truncated: true`: busque o resto sob demanda.
-- `attempts > 1`: houve **fallback** (o primeiro agente falhou ou estava sem quota). Veja os erros com
-  `--section attempts`. Um agente com rate limit entra em **cooldown de 1h** e desce no ranking sozinho.
-- `note` avisa o que importa: checkout sujo (o worktree nasce do último commit e não inclui mudanças
-  não commitadas), worktree anterior perdido, commit falho, "no file changes".
-- `verification`: `{status, passed, failed, regressions, warnings}`. `verified` não achou regressão contra o commit de origem (falha que já existia não reprova); `verification_failed` lista o que quebrou; `unverified` é ausência de checks, nunca um passe. Detalhe: `dispatch result <id> --section verification`.
+- `attempts` > 1: houve **fallback**. Erros em `--section attempts`. Rate limit gera **cooldown de 1h**.
+- `note`: checkout sujo, worktree perdido, commit falho, "no file changes".
+- `verification`: `verified` (sem regressão nova), `verification_failed`, `unverified` (não é um passe) ou `error`.
 
 ```bash
-dispatch result <id> --offset 40 --limit 100
-dispatch result <id> --section meta       # metadados sem o output; verification compacto
-dispatch result <id> --section attempts   # fallbacks e erros
+dispatch result <id> --section summary
+dispatch result <id> --section agent --offset 0 --limit 100
 dispatch result <id> --section verification
+dispatch result <id> --section files
+dispatch result <id> --section attempts
+dispatch result <id> --section meta
 ```
 
 Exit code: 0 ok, 124 timeout, 1 demais falhas (`wait`: 3 se ainda rodando).
@@ -124,4 +123,6 @@ dispatch agents          # CLIs instalados
 dispatch tiers           # tabela efetiva (edite ~/.dispatch/tiers.json após `dispatch tiers --init`)
 dispatch tiers --check   # valida a tabela contra agentes e modelos instalados
 dispatch subagents --check   # valida os perfis (tier, timeout, agentes citados)
+dispatch stats --by model --since 7d
+dispatch stats --capacity   # janelas de quota; sem snapshots a capacidade é desconhecida
 ```

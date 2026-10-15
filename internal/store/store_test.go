@@ -1,7 +1,11 @@
 package store
 
 import (
+	"compress/gzip"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,5 +92,108 @@ func TestStoreAppendRedactsSecrets(t *testing.T) {
 	}
 	if len(got.Attempts) != 1 || got.Attempts[0].Error != "attempt error with DB_PASSWORD=[REDACTED]" {
 		t.Errorf("attempt error not redacted: %+v", got.Attempts)
+	}
+}
+
+func TestOptionalZeroIsNotUnknown(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runs.jsonl")
+	s := Store{Path: path}
+	z := 0
+	if err := s.Append(Record{
+		ID: "z", Status: Completed, FilesChanged: &z, Insertions: &z, Deletions: &z, RunMs: I64(0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("z")
+	if err != nil || got.FilesChanged == nil || *got.FilesChanged != 0 || got.RunMs == nil || *got.RunMs != 0 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	b, _ := json.Marshal(got)
+	if !strings.Contains(string(b), `"filesChanged":0`) || !strings.Contains(string(b), `"runMs":0`) {
+		t.Fatal(string(b))
+	}
+
+	legacy := `{"id":"legacy","status":"COMPLETED","agent":"codex","model":"gpt-5.6-terra","createdAt":"2026-01-02T00:00:00Z","finishedAt":"2026-01-02T00:00:05Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "other.jsonl"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := Store{Path: filepath.Join(dir, "other.jsonl")}
+	leg, err := old.Get("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leg.RunMs != nil || leg.FilesChanged != nil || leg.QueuedMs != nil || leg.Provider != "" || leg.Effort != "" {
+		t.Fatalf("legacy gained fields: %+v", leg)
+	}
+	ms, ok := leg.ObservedMs()
+	if !ok || ms != 5000 {
+		t.Fatalf("derived duration %d %v", ms, ok)
+	}
+}
+
+func TestRotateReadsGzipAndLatestWins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runs.jsonl")
+	prev := rotateBytes
+	rotateBytes = 200
+	t.Cleanup(func() { rotateBytes = prev })
+
+	s := Store{Path: path}
+	if err := s.Append(Record{ID: "old", Status: Completed, Output: strings.Repeat("y", 500)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(Record{ID: "new", Status: Failed, Output: "n"}); err != nil {
+		t.Fatal(err)
+	}
+	gzs := 0
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "runs.jsonl.") && strings.HasSuffix(e.Name(), ".gz") {
+			gzs++
+		}
+	}
+	if gzs != 1 {
+		t.Fatalf("gzip archives = %d", gzs)
+	}
+	live, err := os.ReadFile(path)
+	if err != nil || strings.Contains(string(live), `"id":"old"`) {
+		t.Fatalf("live file should only have the new row: %s %v", live, err)
+	}
+	oldRec, err := s.Get("old")
+	if err != nil || !strings.Contains(oldRec.Output, "yyy") {
+		t.Fatalf("%+v %v", oldRec, err)
+	}
+	if _, err := s.Get("new"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List()
+	if err != nil || len(list) != 2 {
+		t.Fatalf("%d %v", len(list), err)
+	}
+
+	// A later live line overrides the archived copy of the same id.
+	archived := `{"id":"same","status":"FAILED","output":"archived"}` + "\n"
+	f, err := os.Create(filepath.Join(dir, "runs.jsonl.20260101-000000Z.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	if _, err := gz.Write([]byte(archived)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if err := os.WriteFile(path, []byte(`{"id":"same","status":"COMPLETED","output":"live"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("same")
+	if err != nil || got.Status != Completed || got.Output != "live" {
+		t.Fatalf("latest live line should win: %+v %v", got, err)
 	}
 }

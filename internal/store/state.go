@@ -59,6 +59,34 @@ func (s Store) RecordSnapshot(key string, snap pace.Snapshot) (bool, error) {
 	return err == nil, err
 }
 
+// SnapshotRecord is one row of snapshots.jsonl.
+type SnapshotRecord struct {
+	Key string `json:"key"`
+	pace.Snapshot
+}
+
+// AllSnapshots reads every retained quota row. A missing file is empty.
+func (s Store) AllSnapshots() ([]SnapshotRecord, error) {
+	f, err := os.Open(filepath.Join(s.dir(), "snapshots.jsonl"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []SnapshotRecord
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<16), 1<<20)
+	for sc.Scan() {
+		var r SnapshotRecord
+		if json.Unmarshal(sc.Bytes(), &r) == nil && r.Key != "" {
+			out = append(out, r)
+		}
+	}
+	return out, sc.Err()
+}
+
 // Snapshots returns the retained snapshots for key, oldest first.
 func (s Store) Snapshots(key string) []pace.Snapshot {
 	f, err := os.Open(filepath.Join(s.dir(), "snapshots.jsonl"))

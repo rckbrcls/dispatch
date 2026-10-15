@@ -82,6 +82,7 @@ func (d Deps) Reconcile(ctx context.Context) error {
 		}
 		rec.Status, rec.Note, rec.FinishedAt = store.Orphaned, joinNote(rec.Note, note), d.Now()
 		rec.ExitCode = 1
+		completeTelemetry(&rec, rec.FinishedAt)
 		if err := d.Store.Append(rec); err != nil {
 			return err
 		}
@@ -128,7 +129,7 @@ func (d Deps) Cancel(ctx context.Context, id string) (store.Record, error) {
 		return rec, nil
 	}
 	rec.Status, rec.Error, rec.FinishedAt = store.Cancelled, "cancelled", d.Now()
-	rec.ExitClass = ExitClass(store.Cancelled, rec.Verification)
+	completeTelemetry(&rec, rec.FinishedAt)
 	return rec, d.Store.Append(rec)
 }
 
@@ -159,5 +160,6 @@ func (d Deps) Recover(ctx context.Context, id string) (store.Record, string, err
 	}
 	rec.Status, rec.Note, rec.FinishedAt = store.Completed, "recovered from orphan; unverified", d.Now()
 	rec.Error, rec.ExitCode = "", 0
+	completeTelemetry(&rec, rec.FinishedAt)
 	return rec, stat, d.Store.Append(rec)
 }

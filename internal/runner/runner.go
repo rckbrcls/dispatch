@@ -231,6 +231,9 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		return rec, fmt.Errorf("run %s already %s", rec.ID, rec.Status)
 	}
 	rec.PID, rec.ProcStart, rec.StartedAt = os.Getpid(), processStart(ctx, os.Getpid()), d.Now()
+	if !rec.CreatedAt.IsZero() {
+		rec.QueuedMs = store.I64(nonNegMs(rec.StartedAt.Sub(rec.CreatedAt)))
+	}
 	if err := d.Store.Append(rec); err != nil {
 		return rec, err
 	}
@@ -238,10 +241,14 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		return rec, err
 	}
 	timeout := time.Duration(rec.TimeoutSec) * time.Second
+	var agentStart time.Time
 
 	finish := func(s store.Status, msg string) (store.Record, error) {
 		rec.Status, rec.Error, rec.FinishedAt = s, msg, d.Now()
-		rec.ExitClass = ExitClass(s, rec.Verification)
+		if rec.RunMs == nil && !agentStart.IsZero() {
+			rec.RunMs = store.I64(nonNegMs(d.Now().Sub(agentStart)))
+		}
+		completeTelemetry(&rec, rec.FinishedAt)
 		rec.Output = sandbox.Redact(rec.Output)
 		rec.Error = sandbox.Redact(rec.Error)
 		rec.Note = sandbox.Redact(rec.Note)
@@ -316,8 +323,14 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 	}
 
 	for _, c := range cands {
+		if agentStart.IsZero() {
+			agentStart = d.Now()
+		}
+		attemptStart := d.Now()
 		rec.AgentPID = 0
 		rec.Status, rec.Agent, rec.Model = store.Running, c.Adapter.Name(), c.Model
+		rec.Provider = ProviderOf(rec.Agent, rec.Model)
+		rec.Effort = EffortOf(rec.Model)
 		if err := d.Store.Append(rec); err != nil {
 			return rec, err
 		}
@@ -335,6 +348,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 			return finish(store.Failed, err.Error())
 		case err == nil:
 			rec.Output = res.Output
+			rec.RunMs = store.I64(nonNegMs(d.Now().Sub(agentStart)))
 			if rec.Worktree != "" && !rec.ReadOnly {
 				committed := true
 				if ok, cerr := worktree.Commit(rec.Worktree, rec.ID); cerr != nil {
@@ -364,7 +378,11 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if rateLimited.MatchString(err.Error()) {
 			d.Store.SetCooldown(c.Adapter.Name(), d.Now().Add(cooldownFor), d.Now())
 		}
-		rec.Attempts = append(rec.Attempts, store.Attempt{Agent: c.Adapter.Name(), Model: c.Model, Error: err.Error()})
+		rec.Attempts = append(rec.Attempts, store.Attempt{
+			Agent: c.Adapter.Name(), Model: c.Model, Error: err.Error(),
+			DurationMs: store.I64(nonNegMs(d.Now().Sub(attemptStart))),
+			ExitClass:  classOf(err.Error()),
+		})
 	}
 	last := rec.Attempts[len(rec.Attempts)-1]
 	return finish(store.Failed, fmt.Sprintf("all %d candidates failed; last: %s/%s: %s", len(rec.Attempts), last.Agent, last.Model, last.Error))
@@ -405,6 +423,48 @@ func ExitClass(status store.Status, verification string) string {
 		return "failed"
 	default:
 		return ""
+	}
+}
+
+func nonNegMs(d time.Duration) int64 {
+	ms := d.Milliseconds()
+	if ms < 0 {
+		return 0
+	}
+	return ms
+}
+
+// completeTelemetry fills provider, effort, diff stats and exit class.
+// Nil numeric fields stay nil when the measurement is unknown.
+func completeTelemetry(rec *store.Record, now time.Time) {
+	if rec.RunMs == nil && !rec.StartedAt.IsZero() && !now.IsZero() && terminal(rec.Status) {
+		rec.RunMs = store.I64(nonNegMs(now.Sub(rec.StartedAt)))
+	}
+	if rec.Provider == "" {
+		rec.Provider = ProviderOf(rec.Agent, rec.Model)
+	}
+	if rec.Effort == "" {
+		rec.Effort = EffortOf(rec.Model)
+	}
+	if rec.FilesChanged == nil && rec.Worktree != "" && rec.BaseSHA != "" {
+		fillDiff(rec)
+	}
+	if terminal(rec.Status) {
+		if cls := Classify(*rec); cls != "" {
+			rec.ExitClass = cls
+		}
+	}
+}
+
+func fillDiff(rec *store.Record) {
+	files, ins, del, linesKnown, err := worktree.NumStat(rec.Worktree, rec.BaseSHA)
+	if err != nil {
+		return
+	}
+	rec.FilesChanged = store.I(files)
+	if linesKnown {
+		rec.Insertions = store.I(ins)
+		rec.Deletions = store.I(del)
 	}
 }
 

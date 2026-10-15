@@ -61,3 +61,32 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNumStat(t *testing.T) {
+	root := t.TempDir()
+	run(t, root, "init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(root, "a.txt"), []byte("a\n"), 0o644)
+	run(t, root, "add", "-A")
+	run(t, root, "commit", "-qm", "base")
+	base := strings.TrimSpace(string(mustGit(t, root, "rev-parse", "HEAD")))
+	files, ins, del, known, err := NumStat(root, base)
+	if err != nil || !known || files != 0 || ins != 0 || del != 0 {
+		t.Fatalf("empty %d %d %d %v %v", files, ins, del, known, err)
+	}
+	os.WriteFile(filepath.Join(root, "b.txt"), []byte("b\n"), 0o644)
+	run(t, root, "add", "b.txt")
+	files, ins, del, known, err = NumStat(root, base)
+	if err != nil || !known || files != 1 || ins != 1 || del != 0 {
+		t.Fatalf("added %d %d %d %v %v", files, ins, del, known, err)
+	}
+}
+
+func mustGit(t *testing.T, dir string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	b, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
