@@ -50,7 +50,7 @@ depois um `wait` por id. Duas escritas no mesmo `--dir` com `--no-worktree` conf
 
 ## Resultado
 
-O `run`/`wait` imprime JSON: `id`, `status` (`COMPLETED|FAILED|TIMED_OUT|CANCELLED`), `agent`, `model`,
+O `run`/`wait` imprime JSON: `id`, `status` (`COMPLETED|FAILED|TIMED_OUT|CANCELLED|ORPHANED`), `agent`, `model`,
 `summary` (primeiras ~40 linhas), `truncated`, `totalLines`, e quando existem: `error`, `note`,
 `branch`, `worktree`, `sessionId`, `attempts` (nº de tentativas), `resumedOf`.
 
@@ -74,6 +74,7 @@ Exit code: 0 ok, 124 timeout, 1 demais falhas (`wait`: 3 se ainda rodando).
 dispatch run --resume <id> --background - <<< "ajuste X"  # mesma sessão, agente, modelo e worktree
 dispatch list [--status RUNNING] [--limit N]               # histórico
 dispatch cancel <id>                                        # cancela run em andamento
+dispatch recover <id>                                      # ORPHANED: commita trabalho preservado, sem verificação
 dispatch clean <id> [--force]                               # descarta o worktree
 ```
 

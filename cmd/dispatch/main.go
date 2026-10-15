@@ -48,6 +48,7 @@ const usageText = `usage:
   dispatch wait <id> [--timeout 10m]
   dispatch list [--status S] [--limit N]
   dispatch cancel <id>
+  dispatch recover <id>   (ORPHANED worktree; commits preserved changes)
   dispatch merge <id>
   dispatch clean <id> [--force]
   dispatch skill install [--agent claude,codex,cursor,grok,antigravity|all] [--force]
@@ -89,6 +90,8 @@ func main() {
 		os.Exit(list(args))
 	case "cancel":
 		os.Exit(cancel(args))
+	case "recover":
+		os.Exit(recoverCmd(args))
 	case "merge":
 		os.Exit(merge(args))
 	case "clean":
@@ -362,6 +365,9 @@ func run(args []string) int {
 		return exitCode(rec.Status)
 	}
 
+	if err := d.Reconcile(ctx); err != nil {
+		fatal(err)
+	}
 	prompt := readPrompt(words)
 	if prompt == "" {
 		fatalUsage("empty prompt")
@@ -420,7 +426,19 @@ func spawnDetached(id string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	return cmd.Process.Release()
+	defer cmd.Process.Release()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, err := runsStore().Get(id)
+		if err != nil {
+			return err
+		}
+		if rec.PID == cmd.Process.Pid || rec.Status != store.Pending {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("background runner did not claim run %s", id)
 }
 
 // --- wait / list / cancel ---
@@ -452,9 +470,12 @@ func wait(args []string) int {
 
 func list(args []string) int {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	status := fs.String("status", "", "filter: PENDING|RUNNING|COMPLETED|FAILED|CANCELLED|TIMED_OUT")
+	status := fs.String("status", "", "filter: PENDING|RUNNING|ORPHANED|COMPLETED|FAILED|CANCELLED|TIMED_OUT")
 	limit := fs.Int("limit", 20, "max rows (0 = all)")
 	fs.Parse(args)
+	if err := deps().Reconcile(context.Background()); err != nil {
+		fatal(err)
+	}
 	recs, err := runsStore().List()
 	if err != nil {
 		fatal(err)
@@ -494,7 +515,23 @@ func cancel(args []string) int {
 	return 0
 }
 
-// --- merge / clean ---
+// --- recover / merge / clean ---
+
+func recoverCmd(args []string) int {
+	fs := flag.NewFlagSet("recover", flag.ExitOnError)
+	pos := parseInterspersed(fs, args)
+	if len(pos) != 1 {
+		fatalUsage("recover needs one run id")
+	}
+	rec, stat, err := deps().Recover(context.Background(), pos[0])
+	if err != nil {
+		fatal(err)
+	}
+	out := view(rec)
+	out["diffStat"] = stat
+	printJSON(out)
+	return 0
+}
 
 func merge(args []string) int {
 	fs := flag.NewFlagSet("merge", flag.ExitOnError)
@@ -548,6 +585,9 @@ func clean(args []string) int {
 // --- result ---
 
 func result(args []string) int {
+	if err := deps().Reconcile(context.Background()); err != nil {
+		fatal(err)
+	}
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
 	section := fs.String("section", "output", "output|meta|attempts")
 	offset := fs.Int("offset", 0, "first line")

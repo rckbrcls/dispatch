@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"slices"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -182,6 +181,7 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 		return store.Record{}, ErrRecursive
 	}
 	rec := store.Record{
+		PID: os.Getpid(), ProcStart: processStart(context.Background(), os.Getpid()),
 		ID: store.NewID(), Status: store.Pending, Tier: string(o.Tier),
 		Prompt: o.Prompt, Dir: o.Dir, ReadOnly: o.ReadOnly, CreatedAt: d.Now(),
 		TimeoutSec: int(o.Timeout / time.Second), NoWorktree: o.NoWorktree,
@@ -198,6 +198,7 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 		rec.ResumedOf, rec.Tier = prev.ID, prev.Tier
 		rec.Agent, rec.Model, rec.SessionID = prev.Agent, prev.Model, prev.SessionID
 		rec.Repo, rec.Worktree, rec.Branch = prev.Repo, prev.Worktree, prev.Branch
+		rec.BaseSHA = prev.BaseSHA
 		if rec.Dir == "" {
 			rec.Dir = prev.Dir
 		}
@@ -209,6 +210,9 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 
 // Run is Begin + Execute.
 func (d Deps) Run(ctx context.Context, o Options) (store.Record, error) {
+	if err := d.Reconcile(ctx); err != nil {
+		return store.Record{}, err
+	}
 	rec, err := d.Begin(o)
 	if err != nil {
 		return rec, err
@@ -221,7 +225,16 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 	if os.Getenv(depthEnv) != "" || os.Getenv(noDelegateEnv) != "" {
 		return rec, ErrRecursive
 	}
-	rec.PID = os.Getpid()
+	if terminal(rec.Status) {
+		return rec, fmt.Errorf("run %s already %s", rec.ID, rec.Status)
+	}
+	rec.PID, rec.ProcStart, rec.StartedAt = os.Getpid(), processStart(ctx, os.Getpid()), d.Now()
+	if err := d.Store.Append(rec); err != nil {
+		return rec, err
+	}
+	if err := d.Reconcile(ctx); err != nil {
+		return rec, err
+	}
 	timeout := time.Duration(rec.TimeoutSec) * time.Second
 
 	finish := func(s store.Status, msg string) (store.Record, error) {
@@ -287,6 +300,10 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 					return finish(store.Failed, "worktree: "+err.Error())
 				}
 				rec.Repo, rec.Worktree, rec.Branch = root, path, branch
+				rec.BaseSHA, err = worktree.Head(path)
+				if err != nil {
+					return finish(store.Failed, err.Error())
+				}
 				dir = filepath.Join(path, worktree.Rel(root, dir))
 				if worktree.Dirty(root) {
 					rec.Note = "checkout has uncommitted changes; the worktree was cut from HEAD and does not include them"
@@ -296,16 +313,23 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 	}
 
 	for _, c := range cands {
+		rec.AgentPID = 0
 		rec.Status, rec.Agent, rec.Model = store.Running, c.Adapter.Name(), c.Model
 		if err := d.Store.Append(rec); err != nil {
 			return rec, err
 		}
 		res, err := c.Adapter.Run(ctx, adapter.Request{
 			Prompt: rec.Prompt, Tier: adapter.Tier(rec.Tier), Dir: dir, ReadOnly: rec.ReadOnly,
+			Started: func(pid int) error {
+				rec.AgentPID = pid
+				return d.Store.Append(rec)
+			},
 			Timeout: timeout, ResumeSession: resumeSession, Env: childEnv,
 		}, c.Model)
 		rec.ExitCode, rec.SessionID = res.ExitCode, res.SessionID
 		switch {
+		case errors.Is(err, adapter.ErrProcessesAlive):
+			return finish(store.Failed, err.Error())
 		case err == nil:
 			rec.Output = res.Output
 			if rec.Worktree != "" && !rec.ReadOnly {
@@ -340,24 +364,21 @@ func joinNote(a, b string) string {
 }
 
 func terminal(s store.Status) bool {
-	return s == store.Completed || s == store.Failed || s == store.Cancelled || s == store.TimedOut
+	return s == store.Orphaned || s == store.Completed || s == store.Failed || s == store.Cancelled || s == store.TimedOut
 }
 
 // Wait polls until the run reaches a terminal status or ctx ends.
 func (d Deps) Wait(ctx context.Context, id string, poll time.Duration) (store.Record, error) {
 	for {
+		if err := d.Reconcile(ctx); err != nil {
+			rec, _ := d.Store.Get(id)
+			return rec, err
+		}
 		rec, err := d.Store.Get(id)
 		if err != nil {
 			return rec, err
 		}
 		if terminal(rec.Status) {
-			return rec, nil
-		}
-		if rec.PID > 0 && !alive(rec.PID) {
-			// Process died without a final record: mark it so waiters finish.
-			rec.Status, rec.FinishedAt = store.Failed, d.Now()
-			rec.Error = joinNote(rec.Error, "runner process exited unexpectedly")
-			d.Store.Append(rec)
 			return rec, nil
 		}
 		select {
@@ -366,40 +387,6 @@ func (d Deps) Wait(ctx context.Context, id string, poll time.Duration) (store.Re
 		case <-time.After(poll):
 		}
 	}
-}
-
-// Cancel asks the process running id to stop; its handler records
-// CANCELLED. A run whose process is already gone is marked directly.
-func (d Deps) Cancel(ctx context.Context, id string) (store.Record, error) {
-	rec, err := d.Store.Get(id)
-	if err != nil {
-		return rec, err
-	}
-	if terminal(rec.Status) {
-		return rec, fmt.Errorf("run %s already %s", rec.ID, rec.Status)
-	}
-	if rec.PID > 0 && alive(rec.PID) {
-		if err := syscall.Kill(rec.PID, syscall.SIGTERM); err != nil {
-			return rec, err
-		}
-		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if out, err := d.Wait(wctx, rec.ID, 200*time.Millisecond); err == nil {
-			return out, nil
-		}
-	}
-	rec, _ = d.Store.Get(id)
-	if !terminal(rec.Status) {
-		rec.Status, rec.FinishedAt = store.Cancelled, d.Now()
-		rec.Error = "cancelled"
-		d.Store.Append(rec)
-	}
-	return rec, nil
-}
-
-func alive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // Summary returns a compact head of output: at most maxLines lines and

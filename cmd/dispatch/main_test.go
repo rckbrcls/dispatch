@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"dispatch/internal/store"
+	"dispatch/internal/worktree"
+	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,5 +202,68 @@ func TestCLIHookInstallUninstall(t *testing.T) {
 	installed, err = hook.IsInstalled(settingsPath)
 	if err != nil || installed {
 		t.Fatalf("expected hook to be uninstalled: %v, installed=%v", err, installed)
+	}
+}
+
+func TestOrphanRecoveryCLI(t *testing.T) {
+	if os.Getenv("DISPATCH_TEST_DIRTY_CLEAN") == "1" {
+		clean([]string{"orphan"})
+		return
+	}
+	setupTestEnv(t)
+	root := t.TempDir()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=test", "-c", "user.email=test@localhost"}, args...)...)
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, b)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	git(root, "init", "-q")
+	git(root, "commit", "--allow-empty", "-qm", "base")
+	base := git(root, "rev-parse", "HEAD")
+	wt := filepath.Join(t.TempDir(), "wt")
+	branch, err := worktree.Create(root, wt, "orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := store.Record{ID: "orphan", Status: store.Orphaned, Repo: root, Worktree: wt, Branch: branch, BaseSHA: base}
+	if err := runsStore().Append(rec); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(wt, "work.txt")
+	if err := os.WriteFile(file, []byte("work"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestOrphanRecoveryCLI$")
+	cmd.Env = append(os.Environ(), "DISPATCH_TEST_DIRTY_CLEAN=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "--force") {
+		t.Fatalf("clean should refuse dirty orphan: %s %v", out, err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatal(err)
+	}
+	result := captureStdout(t, func() {
+		if code := recoverCmd([]string{"orphan"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["status"] != "COMPLETED" || !strings.Contains(decoded["diffStat"].(string), "work.txt") {
+		t.Fatal(result)
+	}
+	captureStdout(t, func() {
+		if code := merge([]string{"orphan"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(root, "work.txt")); err != nil {
+		t.Fatal(err)
 	}
 }
