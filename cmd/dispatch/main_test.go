@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"dispatch/internal/store"
+	"dispatch/internal/verify"
 	"dispatch/internal/worktree"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -265,5 +267,158 @@ func TestOrphanRecoveryCLI(t *testing.T) {
 	})
 	if _, err := os.Stat(filepath.Join(root, "work.txt")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMergeRefusesVerificationFailure(t *testing.T) {
+	if os.Getenv("DISPATCH_TEST_MERGE_REFUSE") == "1" {
+		merge([]string{"bad"})
+		return
+	}
+	setupTestEnv(t)
+	root := t.TempDir()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=test", "-c", "user.email=test@localhost"}, args...)...)
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, b)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	git(root, "init", "-q", "-b", "main")
+	git(root, "commit", "--allow-empty", "-qm", "base")
+	wt := filepath.Join(t.TempDir(), "wt")
+	branch, err := worktree.Create(root, wt, "bad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "work.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(wt, "add", "-A")
+	git(wt, "commit", "-qm", "work")
+	rec := store.Record{
+		ID: "bad", Status: store.Completed, Repo: root, Worktree: wt, Branch: branch,
+		Verification: "verification_failed",
+		Verify: &verify.Result{
+			Status: verify.StatusFailed,
+			Checks: []verify.CheckResult{{
+				Name: "test", Status: verify.CheckFailed, Regressions: []string{"pkg.TestX"},
+			}},
+		},
+	}
+	if err := runsStore().Append(rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeRefusal(rec, false); err == nil || mergeRefusal(rec, true) != nil {
+		t.Fatal("refusal predicate")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMergeRefusesVerificationFailure$")
+	cmd.Env = append(os.Environ(), "DISPATCH_TEST_MERGE_REFUSE=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "pkg.TestX") {
+		t.Fatalf("merge should refuse: %v %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "work.txt")); err != nil {
+		t.Fatal("refused merge removed the worktree")
+	}
+	merged := captureStdout(t, func() {
+		if code := merge([]string{"--force", "bad"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if !strings.Contains(merged, "pkg.TestX") || !strings.Contains(merged, "despite") {
+		t.Fatal(merged)
+	}
+	if _, err := os.Stat(filepath.Join(root, "work.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerificationViewAndNotes(t *testing.T) {
+	setupTestEnv(t)
+	if mergeNote(store.Record{}, false) == "" || mergeNote(store.Record{Verification: "unverified"}, false) == "" {
+		t.Fatal("empty and unverified should warn")
+	}
+	if mergeNote(store.Record{Verification: "error"}, false) == "" {
+		t.Fatal("error should warn")
+	}
+	if mergeNote(store.Record{Verification: "verified"}, false) != "" {
+		t.Fatal("verified should not warn")
+	}
+	regs := make([]string, 12)
+	for i := range regs {
+		regs[i] = fmt.Sprintf("pkg.Test%d", i)
+	}
+	rec := store.Record{
+		ID: "v1", Status: store.Completed, Verification: "verification_failed",
+		Verify: &verify.Result{
+			Status:   verify.StatusFailed,
+			Warnings: []string{"lockfile changed: go.sum"},
+			Checks: []verify.CheckResult{{
+				Name: "test", Status: verify.CheckFailed, Regressions: regs,
+				Tail: "saw TOKEN=supersecret in log",
+			}},
+		},
+	}
+	if err := runsStore().Append(rec); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := runsStore().Get("v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored.Verify.Checks[0].Tail, "supersecret") || !strings.Contains(stored.Verify.Checks[0].Tail, "[REDACTED]") {
+		t.Fatalf("tail %q", stored.Verify.Checks[0].Tail)
+	}
+	comp := view(stored)["verification"].(map[string]any)
+	if comp["status"] != "verification_failed" || len(comp["regressions"].([]string)) != 10 {
+		t.Fatalf("%#v", comp)
+	}
+	meta := captureStdout(t, func() {
+		if code := result([]string{"--section", "meta", "v1"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if strings.Contains(meta, "supersecret") || strings.Contains(meta, "TOKEN=") {
+		t.Fatal(meta)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(meta), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	vfy := decoded["verification"].(map[string]any)
+	if got := vfy["regressions"].([]any); len(got) != 10 {
+		t.Fatalf("%v", got)
+	}
+	detail := captureStdout(t, func() {
+		if code := result([]string{"--section", "verification", "v1"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if !strings.Contains(detail, "pkg.Test11") || !strings.Contains(detail, "[REDACTED]") || strings.Contains(detail, "supersecret") {
+		t.Fatal(detail)
+	}
+}
+
+func TestVerifyInit(t *testing.T) {
+	setupTestEnv(t)
+	root := t.TempDir()
+	t.Chdir(root)
+	out := captureStdout(t, func() {
+		if code := verifyCmd([]string{"--init"}); code != 0 {
+			t.Fatal(code)
+		}
+	})
+	if !strings.Contains(out, "wrote") {
+		t.Fatal(out)
+	}
+	b, err := os.ReadFile(filepath.Join(root, ".dispatch", "verify.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != verify.Example || !strings.Contains(string(b), `"parse": "gotest"`) {
+		t.Fatalf("%s", b)
 	}
 }

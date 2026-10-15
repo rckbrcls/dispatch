@@ -21,6 +21,7 @@ import (
 	"dispatch/internal/sandbox"
 	"dispatch/internal/store"
 	"dispatch/internal/tiers"
+	"dispatch/internal/verify"
 	"dispatch/internal/worktree"
 )
 
@@ -59,6 +60,7 @@ type Options struct {
 	ReadOnly   bool
 	Timeout    time.Duration
 	NoWorktree bool
+	NoVerify   bool
 	Resume     string
 	// Subagent profile: name for the record, soft agent preferences.
 	Profile       string
@@ -184,7 +186,7 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 		PID: os.Getpid(), ProcStart: processStart(context.Background(), os.Getpid()),
 		ID: store.NewID(), Status: store.Pending, Tier: string(o.Tier),
 		Prompt: o.Prompt, Dir: o.Dir, ReadOnly: o.ReadOnly, CreatedAt: d.Now(),
-		TimeoutSec: int(o.Timeout / time.Second), NoWorktree: o.NoWorktree,
+		TimeoutSec: int(o.Timeout / time.Second), NoWorktree: o.NoWorktree, NoVerify: o.NoVerify,
 		Profile: o.Profile, Prefer: o.Prefer, Avoid: o.Avoid,
 	}
 	if o.Resume != "" {
@@ -239,6 +241,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 
 	finish := func(s store.Status, msg string) (store.Record, error) {
 		rec.Status, rec.Error, rec.FinishedAt = s, msg, d.Now()
+		rec.ExitClass = ExitClass(s, rec.Verification)
 		rec.Output = sandbox.Redact(rec.Output)
 		rec.Error = sandbox.Redact(rec.Error)
 		rec.Note = sandbox.Redact(rec.Note)
@@ -333,12 +336,23 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		case err == nil:
 			rec.Output = res.Output
 			if rec.Worktree != "" && !rec.ReadOnly {
+				committed := true
 				if ok, cerr := worktree.Commit(rec.Worktree, rec.ID); cerr != nil {
+					committed = false
 					rec.Note = joinNote(rec.Note, "commit failed: "+cerr.Error())
 				} else if ok {
 					rec.Note = joinNote(rec.Note, "changes committed on "+rec.Branch)
 				} else {
 					rec.Note = joinNote(rec.Note, "no file changes")
+				}
+				if !rec.NoVerify {
+					if !committed {
+						rec.Verification = string(verify.StatusError)
+						rec.Verify = &verify.Result{Status: verify.StatusError}
+						rec.Note = joinNote(rec.Note, "verification skipped: commit failed")
+					} else {
+						d.applyVerify(ctx, &rec)
+					}
 				}
 			}
 			return finish(store.Completed, "")
@@ -354,6 +368,44 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 	}
 	last := rec.Attempts[len(rec.Attempts)-1]
 	return finish(store.Failed, fmt.Sprintf("all %d candidates failed; last: %s/%s: %s", len(rec.Attempts), last.Agent, last.Model, last.Error))
+}
+
+// applyVerify runs after a successful write commit, including on --resume.
+func (d Deps) applyVerify(ctx context.Context, rec *store.Record) {
+	if rec.NoVerify || rec.Worktree == "" {
+		return
+	}
+	if st, err := os.Stat(rec.Worktree); err != nil || !st.IsDir() {
+		return
+	}
+	res, err := verify.Run(ctx, verify.Options{
+		Repo: rec.Repo, Worktree: rec.Worktree, BaseSHA: rec.BaseSHA,
+	})
+	rec.Verify = &res
+	rec.Verification = string(res.Status)
+	rec.VerifyMs = res.DurationMs
+	if err != nil {
+		rec.Note = joinNote(rec.Note, "verification: "+err.Error())
+	}
+}
+
+// ExitClass maps a terminal status and the verification verdict.
+func ExitClass(status store.Status, verification string) string {
+	switch status {
+	case store.Completed:
+		if verification == string(verify.StatusFailed) {
+			return "verify_fail"
+		}
+		return "ok"
+	case store.TimedOut:
+		return "timeout"
+	case store.Cancelled:
+		return "cancelled"
+	case store.Failed:
+		return "failed"
+	default:
+		return ""
+	}
 }
 
 func joinNote(a, b string) string {

@@ -3,7 +3,10 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -180,6 +183,153 @@ func TestResumeUsesSameAgentAndSession(t *testing.T) {
 	}
 	if len(ran) != 1 || ran[0] != "a/m1@sess-a" {
 		t.Fatalf("ran = %v", ran)
+	}
+}
+
+type editFake struct {
+	fake
+	edit func(dir string)
+}
+
+func (f editFake) Run(ctx context.Context, r adapter.Request, m string) (adapter.Result, error) {
+	if f.edit != nil {
+		f.edit(r.Dir)
+	}
+	return f.fake.Run(ctx, r, m)
+}
+
+func scriptRepo(t *testing.T, script string) string {
+	t.Helper()
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root, "-c", "user.name=test", "-c", "user.email=test@localhost"}, args...)...)
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, b)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	write := func(path, body string, mode os.FileMode) {
+		t.Helper()
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("check.sh", script, 0o755)
+	write(".dispatch/verify.json", `{"checks":[{"name":"check","argv":["./check.sh"],"timeout":"10s","parse":"none"}]}`, 0o644)
+	git("add", "-A")
+	git("commit", "-qm", "base")
+	return root
+}
+
+func regOf(rec store.Record) []string {
+	var out []string
+	if rec.Verify == nil {
+		return nil
+	}
+	for _, c := range rec.Verify.Checks {
+		out = append(out, append(c.Regressions, c.Preexisting...)...)
+	}
+	return out
+}
+
+func TestWriteRunVerifiesAndResumeReverifies(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DISPATCH_HOME", home)
+	root := scriptRepo(t, "#!/bin/sh\nif [ -f BREAK ]; then exit 1; fi\nexit 0\n")
+	var ran []string
+	n := 0
+	f := editFake{fake: fake{name: "a", out: "ok\n", ran: &ran}, edit: func(dir string) {
+		n++
+		if n >= 2 {
+			if err := os.WriteFile(filepath.Join(dir, "BREAK"), []byte("x"), 0o644); err != nil {
+				panic(err)
+			}
+		}
+	}}
+	d := deps(t, &ran, f)
+	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p", Dir: root})
+	if err != nil || rec.Status != store.Completed || rec.Verification != "verified" || rec.ExitClass != "ok" {
+		t.Fatalf("%+v %v", rec, err)
+	}
+	if got, _ := d.Store.Get(rec.ID); got.Verification != "verified" || got.Verify == nil {
+		t.Fatalf("not persisted: %+v", got)
+	}
+	second, err := d.Run(context.Background(), Options{Prompt: "follow", Dir: root, Resume: rec.ID})
+	if err != nil || second.Status != store.Completed || second.Verification != "verification_failed" || second.ExitClass != "verify_fail" {
+		t.Fatalf("%+v %v", second, err)
+	}
+	if !slices.Contains(regOf(second), "check:exit1") {
+		t.Fatalf("regs %v", regOf(second))
+	}
+}
+
+func TestNoVerifySkipsChecks(t *testing.T) {
+	t.Setenv("DISPATCH_HOME", t.TempDir())
+	root := scriptRepo(t, "#!/bin/sh\nif [ -f BREAK ]; then exit 1; fi\nexit 0\n")
+	var ran []string
+	f := editFake{fake: fake{name: "a", out: "ok\n", ran: &ran}, edit: func(dir string) {
+		os.WriteFile(filepath.Join(dir, "BREAK"), []byte("x"), 0o644)
+	}}
+	d := deps(t, &ran, f)
+	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p", Dir: root, NoVerify: true})
+	if err != nil || rec.Status != store.Completed || rec.Verification != "" || rec.ExitClass != "ok" || !rec.NoVerify {
+		t.Fatalf("%+v %v", rec, err)
+	}
+}
+
+func TestPreexistingDoesNotFailWriteRun(t *testing.T) {
+	t.Setenv("DISPATCH_HOME", t.TempDir())
+	root := scriptRepo(t, "#!/bin/sh\nexit 1\n")
+	var ran []string
+	f := editFake{fake: fake{name: "a", out: "ok\n", ran: &ran}, edit: func(dir string) {
+		os.WriteFile(filepath.Join(dir, "note.txt"), []byte("n\n"), 0o644)
+	}}
+	d := deps(t, &ran, f)
+	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p", Dir: root})
+	if err != nil || rec.Verification != "verified" || rec.ExitClass != "ok" || rec.Status != store.Completed {
+		t.Fatalf("%+v %v", rec, err)
+	}
+	var pre []string
+	for _, c := range rec.Verify.Checks {
+		pre = append(pre, c.Preexisting...)
+	}
+	if !slices.Contains(pre, "check:exit1") {
+		t.Fatalf("pre %v", pre)
+	}
+}
+
+func TestRunWithoutModuleIsUnverified(t *testing.T) {
+	t.Setenv("DISPATCH_HOME", t.TempDir())
+	root := t.TempDir()
+	cmd := exec.Command("git", "-C", root, "-c", "user.name=test", "-c", "user.email=test@localhost", "init", "-q", "-b", "main")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, b)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "-C", root, "-c", "user.name=test", "-c", "user.email=test@localhost", "add", "-A")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, b)
+	}
+	cmd = exec.Command("git", "-C", root, "-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-qm", "base")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, b)
+	}
+	var ran []string
+	f := editFake{fake: fake{name: "a", out: "ok\n", ran: &ran}, edit: func(dir string) {
+		os.WriteFile(filepath.Join(dir, "extra.txt"), []byte("x\n"), 0o644)
+	}}
+	d := deps(t, &ran, f)
+	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p", Dir: root})
+	if err != nil || rec.Status != store.Completed || rec.Verification != "unverified" || rec.ExitClass != "ok" {
+		t.Fatalf("%+v %v", rec, err)
 	}
 }
 

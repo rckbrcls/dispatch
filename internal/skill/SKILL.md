@@ -38,7 +38,7 @@ BRIEF
    Não encerre o turno com runs pendentes.
 3. **Leia o JSON** (veja abaixo), confira `git -C <worktree> diff --stat` e rode os testes. Não leia o
    código escrito na íntegra.
-4. **Integre:** `dispatch merge <id>` (só com `COMPLETED`). Falhou? `dispatch clean <id>`.
+4. **Integre:** `dispatch merge <id>` (só com `COMPLETED`). `verification_failed` recusa o merge até `--force` e lista as regressões. `unverified` e `error` avisam e ainda mesclam. Falhou o run? `dispatch clean <id>`.
 
 Síncrono (`run` sem `--background`) só serve para tarefas curtas; ele bloqueia até o fim.
 
@@ -59,11 +59,13 @@ O `run`/`wait` imprime JSON: `id`, `status` (`COMPLETED|FAILED|TIMED_OUT|CANCELL
   `--section attempts`. Um agente com rate limit entra em **cooldown de 1h** e desce no ranking sozinho.
 - `note` avisa o que importa: checkout sujo (o worktree nasce do último commit e não inclui mudanças
   não commitadas), worktree anterior perdido, commit falho, "no file changes".
+- `verification`: `{status, passed, failed, regressions, warnings}`. `verified` não achou regressão contra o commit de origem (falha que já existia não reprova); `verification_failed` lista o que quebrou; `unverified` é ausência de checks, nunca um passe. Detalhe: `dispatch result <id> --section verification`.
 
 ```bash
 dispatch result <id> --offset 40 --limit 100
-dispatch result <id> --section meta       # metadados sem o output
+dispatch result <id> --section meta       # metadados sem o output; verification compacto
 dispatch result <id> --section attempts   # fallbacks e erros
+dispatch result <id> --section verification
 ```
 
 Exit code: 0 ok, 124 timeout, 1 demais falhas (`wait`: 3 se ainda rodando).
@@ -75,6 +77,7 @@ dispatch run --resume <id> --background - <<< "ajuste X"  # mesma sessão, agent
 dispatch list [--status RUNNING] [--limit N]               # histórico
 dispatch cancel <id>                                        # cancela run em andamento
 dispatch recover <id>                                      # ORPHANED: commita trabalho preservado, sem verificação
+dispatch verify <id>                                       # re-roda os checks (ex.: depois de recover)
 dispatch clean <id> [--force]                               # descarta o worktree
 ```
 
@@ -98,6 +101,7 @@ no ranking, não filtros: um agente evitado ainda roda se for o único com folga
 - `--readonly`: revisão/leitura; o agente não edita arquivos. Use para revisores.
 - `--timeout 10m`: limite do run (estoura como `TIMED_OUT`, sem fallback).
 - `--no-worktree`: escreve direto no `--dir` (use só se um único escritor).
+- `--no-verify`: pula os checks determinísticos depois de um run de escrita.
 - `--dir`: repositório/diretório de trabalho (padrão: o atual).
 
 ## Regras
