@@ -15,7 +15,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
 | 4 | Adapters (`doctor`, capabilities) + quota tipada **(feita)** | n/d (pode ir em paralelo à 3) | M |
 | 5b | Prioridade `speed|balanced|quality` no roteador | 3b (dados de latência) | P/M |
-| 5 | Merge gate | 2 | P |
+| 5 | Merge gate **(feita)** | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |
 | 7 | Adiados (com gatilho) | 2 a 6 | n/d |
 
@@ -103,7 +103,7 @@ Pronto quando: `dispatch stats --by model --since 30d` e `dispatch stats --capac
 - Quota tipada: `QuotaSample{window, used, resetAt, duration, source, confidence}`; sem fonte oficial, expor só risco empírico, nunca um percentual inventado.
 - Pronto quando: mudar uma flag fake de um CLI faz o `doctor` marcar `DEGRADED` em vez de quebrar o run.
 
-## Fase 5 — Merge gate
+## Fase 5 — Merge gate (feita)
 - Antes do `merge`: `git merge-tree` contra o HEAD atual, usando o código de saída e não só a lista de arquivos.
 - Merge serializado por branch alvo e reverificação depois de integrar.
 - Pronto quando: dois runs que editam o mesmo arquivo são detectados antes de tocar o working tree.

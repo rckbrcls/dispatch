@@ -229,6 +229,13 @@ type loaded struct {
 	skip   bool
 }
 
+// HasConfig reports whether repo has a verify config (.dispatch/verify.json)
+// or autodiscoverable checks (e.g. go.mod).
+func HasConfig(repo string) bool {
+	cfg, err := loadConfig(repo, repo)
+	return err == nil && !cfg.skip
+}
+
 func loadConfig(repo, worktree string) (loaded, error) {
 	b, path, err := readConfig(repo, worktree)
 	if err != nil {
