@@ -23,14 +23,25 @@ type Target struct {
 // share ~/.agents/skills (Grok verified via `grok inspect`; Codex and
 // Antigravity paths are not verified against their docs).
 func Targets(home string) map[string]Target {
+	claudeDir := filepath.Join(home, ".claude", "skills")
+	if ccd := os.Getenv("CLAUDE_CONFIG_DIR"); ccd != "" {
+		claudeDir = filepath.Join(ccd, "skills")
+	}
 	shared := Target{Dir: filepath.Join(home, ".agents", "skills")}
 	return map[string]Target{
-		"claude":      {Dir: filepath.Join(home, ".claude", "skills")},
+		"claude":      {Dir: claudeDir},
 		"cursor":      {Dir: filepath.Join(home, ".cursor", "skills")},
 		"codex":       shared,
 		"grok":        shared,
 		"antigravity": {Dir: filepath.Join(home, ".gemini", "config", "skills")},
 	}
+}
+
+// IsInstalled reports whether the dispatch skill exists in dir.
+func IsInstalled(dir string) bool {
+	path := filepath.Join(dir, Name, "SKILL.md")
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // Install writes SKILL.md into dir/dispatch/. It refuses to overwrite an

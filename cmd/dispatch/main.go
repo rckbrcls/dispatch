@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"dispatch/internal/adapter"
+	"dispatch/internal/hook"
 	"dispatch/internal/runner"
 	"dispatch/internal/sandbox"
 	"dispatch/internal/skill"
@@ -32,6 +33,11 @@ var version = "dev"
 const usageText = `usage:
   dispatch version
   dispatch update [--check]
+  dispatch on
+  dispatch off
+  dispatch status
+  dispatch hook install | uninstall
+  dispatch context --hook
   dispatch agents [--json]
   dispatch tiers [--init | --check]
   dispatch run --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
@@ -57,6 +63,16 @@ func main() {
 	}
 	args := os.Args[2:]
 	switch os.Args[1] {
+	case "on":
+		os.Exit(onCmd(args))
+	case "off":
+		os.Exit(offCmd(args))
+	case "status":
+		os.Exit(statusCmd(args))
+	case "hook":
+		os.Exit(hookCmd(args))
+	case "context":
+		os.Exit(contextCmd(args))
 	case "agents":
 		agents(args)
 	case "subagents":
@@ -794,4 +810,170 @@ func subagentsCmd(args []string) int {
 		fmt.Println("!", p)
 	}
 	return 1
+}
+
+// --- on / off / status / hook / context ---
+
+func onCmd(args []string) int {
+	u, err := os.UserHomeDir()
+	if err != nil {
+		fatal(err)
+	}
+	if err := hook.SetEnabled(home(), true); err != nil {
+		fatal(err)
+	}
+	if err := installMissingSkills(u); err != nil {
+		fatal(err)
+	}
+	settingsPath := hook.SettingsPath(u)
+	installed, err := hook.IsInstalled(settingsPath)
+	if err != nil {
+		fatal(err)
+	}
+	if !installed {
+		execPath, err := os.Executable()
+		if err != nil {
+			fatal(err)
+		}
+		abs, err := filepath.Abs(execPath)
+		if err != nil {
+			fatal(err)
+		}
+		if err := hook.Install(settingsPath, abs); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("+ hook         %s\n", settingsPath)
+	}
+	fmt.Println("dispatch: on (ligado)")
+	return 0
+}
+
+func offCmd(args []string) int {
+	if err := hook.SetEnabled(home(), false); err != nil {
+		fatal(err)
+	}
+	fmt.Println("dispatch: off (desligado)")
+	return 0
+}
+
+func statusCmd(args []string) int {
+	u, err := os.UserHomeDir()
+	if err != nil {
+		fatal(err)
+	}
+	enabled := hook.IsEnabled(home())
+	settingsPath := hook.SettingsPath(u)
+	hookInstalled, _ := hook.IsInstalled(settingsPath)
+	claudeDir := skill.Targets(u)["claude"].Dir
+	skillInstalled := skill.IsInstalled(claudeDir)
+
+	stateStr := "off (desligado)"
+	if enabled {
+		stateStr = "on (ligado)"
+	}
+	hookStr := "not installed"
+	if hookInstalled {
+		hookStr = "installed"
+	}
+	skillStr := "not installed"
+	if skillInstalled {
+		skillStr = "installed"
+	}
+
+	fmt.Printf("dispatch: %s\n", stateStr)
+	fmt.Printf("hook:     %s\n", hookStr)
+	fmt.Printf("skill:    %s\n", skillStr)
+	return 0
+}
+
+func hookCmd(args []string) int {
+	if len(args) == 0 {
+		fatalUsage("hook needs a subcommand: install | uninstall")
+	}
+	u, err := os.UserHomeDir()
+	if err != nil {
+		fatal(err)
+	}
+	settingsPath := hook.SettingsPath(u)
+	switch args[0] {
+	case "install":
+		execPath, err := os.Executable()
+		if err != nil {
+			fatal(err)
+		}
+		abs, err := filepath.Abs(execPath)
+		if err != nil {
+			fatal(err)
+		}
+		if err := hook.Install(settingsPath, abs); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("+ hook %s\n", settingsPath)
+		return 0
+	case "uninstall":
+		if err := hook.Uninstall(settingsPath); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("- hook %s\n", settingsPath)
+		return 0
+	default:
+		fatalUsage("unknown hook subcommand " + args[0])
+		return 2
+	}
+}
+
+func contextCmd(args []string) int {
+	fs := flag.NewFlagSet("context", flag.ExitOnError)
+	hookFlag := fs.Bool("hook", false, "context for session hook")
+	fs.Parse(args)
+	if !*hookFlag {
+		fatalUsage("context requires --hook")
+	}
+	if !hook.IsEnabled(home()) {
+		return 0
+	}
+	fmt.Print(hook.ContextBlock())
+	return 0
+}
+
+func installMissingSkills(u string) error {
+	targets := skill.Targets(u)
+	binaries := map[string]string{"claude": "claude"}
+	for _, a := range adapter.Known() {
+		binaries[a.Name()] = a.Binary()
+	}
+	var want []string
+	for name, bin := range binaries {
+		if _, err := exec.LookPath(bin); err == nil {
+			want = append(want, name)
+		}
+	}
+	hasClaude := false
+	for _, w := range want {
+		if w == "claude" {
+			hasClaude = true
+			break
+		}
+	}
+	if !hasClaude {
+		want = append(want, "claude")
+	}
+	sort.Strings(want)
+
+	done := map[string]bool{}
+	for _, name := range want {
+		t, ok := targets[name]
+		if !ok || done[t.Dir] {
+			continue
+		}
+		done[t.Dir] = true
+		if !skill.IsInstalled(t.Dir) {
+			path, err := skill.Install(t.Dir, false)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("+ %-12s %s\n", name, path)
+		}
+	}
+	return nil
 }
