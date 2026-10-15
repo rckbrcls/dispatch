@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func run(t *testing.T, dir string, args ...string) {
@@ -89,4 +90,64 @@ func mustGit(t *testing.T, dir string, args ...string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestParseGitVersion(t *testing.T) {
+	cases := []struct {
+		input     string
+		wantMaj   int
+		wantMin   int
+		wantOk    bool
+		supported bool
+	}{
+		{"git version 2.55.0", 2, 55, true, true},
+		{"git version 2.38.0", 2, 38, true, true},
+		{"git version 2.38.1.windows.1", 2, 38, true, true},
+		{"git version 2.37.1 (Apple Git-137.1)", 2, 37, true, false},
+		{"git version 1.9.5", 1, 9, true, false},
+		{"git version 3.0.0", 3, 0, true, true},
+		{"invalid", 0, 0, false, false},
+	}
+	for _, tc := range cases {
+		maj, min, ok := parseGitVersion(tc.input)
+		if ok != tc.wantOk || maj != tc.wantMaj || min != tc.wantMin {
+			t.Errorf("parseGitVersion(%q) = (%d, %d, %v), want (%d, %d, %v)", tc.input, maj, min, ok, tc.wantMaj, tc.wantMin, tc.wantOk)
+		}
+		supp := ok && (maj > 2 || (maj == 2 && min >= 38))
+		if supp != tc.supported {
+			t.Errorf("supported(%q) = %v, want %v", tc.input, supp, tc.supported)
+		}
+	}
+}
+
+func TestLockMergeStaleDetection(t *testing.T) {
+	root := t.TempDir()
+	run(t, root, "init", "-q", "-b", "main")
+	run(t, root, "commit", "--allow-empty", "-qm", "init")
+
+	unlock1, err := LockMerge(root, "main")
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	// Holding lock, second lock with short timeout should fail
+	oldTimeout := LockTimeout
+	LockTimeout = 50 * time.Millisecond
+	defer func() { LockTimeout = oldTimeout }()
+
+	_, err = LockMerge(root, "main")
+	if err == nil {
+		t.Fatal("expected error acquiring held lock")
+	}
+	if !strings.Contains(err.Error(), "timeout waiting for lock") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	unlock1()
+
+	// Now lock should succeed
+	unlock2, err := LockMerge(root, "main")
+	if err != nil {
+		t.Fatalf("second lock after unlock: %v", err)
+	}
+	unlock2()
 }

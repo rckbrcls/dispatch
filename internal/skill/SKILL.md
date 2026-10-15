@@ -39,6 +39,8 @@ BRIEF
 3. **Leia o RunSummary** (JSON compacto; o texto do agente fica em `dispatch result <id> --section agent`), confira `git -C <worktree> diff --stat` e rode os testes. Não leia o
    código escrito na íntegra.
 4. **Integre:** `dispatch merge <id>` (só com `COMPLETED`). `verification_failed` recusa o merge até `--force` e lista as regressões. `unverified` e `error` avisam e ainda mesclam. Falhou o run? `dispatch clean <id>`.
+   Conflito (`merge_conflict`): detectado via `git merge-tree` antes de tocar o working tree, sem bypass por `--force`.
+   Recusa com JSON listando os arquivos e sugere `dispatch run --resume <id>` (pedindo rebase) ou resolver à mão.
 
 Síncrono (`run` sem `--background`) só serve para tarefas curtas; ele bloqueia até o fim.
 

@@ -55,7 +55,7 @@ const usageText = `usage:
   dispatch recover <id>   (ORPHANED worktree; commits preserved changes)
   dispatch verify <id>
   dispatch verify --init  (write .dispatch/verify.json if missing)
-  dispatch merge <id> [--force]
+  dispatch merge <id> [--force] [--no-verify]
   dispatch clean <id> [--force]
   dispatch skill install [--agent claude,codex,cursor,grok,antigravity|all] [--force]
   dispatch skill show
@@ -782,6 +782,7 @@ func recoverCmd(args []string) int {
 func merge(args []string) int {
 	fs := flag.NewFlagSet("merge", flag.ExitOnError)
 	force := fs.Bool("force", false, "merge even when verification failed")
+	noVerify := fs.Bool("no-verify", false, "skip post-merge verification")
 	pos := parseInterspersed(fs, args)
 	if len(pos) != 1 {
 		fatalUsage("merge needs one run id")
@@ -799,10 +800,54 @@ func merge(args []string) int {
 	if err := mergeRefusal(rec, *force); err != nil {
 		fatal(err)
 	}
+
+	fail := func(err error) int {
+		fmt.Fprintln(os.Stderr, "dispatch:", sandbox.Redact(err.Error()))
+		return 1
+	}
+
+	targetBranch, _ := worktree.CurrentBranch(rec.Repo)
+	unlock, err := worktree.LockMerge(rec.Repo, targetBranch)
+	if err != nil {
+		return fail(err)
+	}
+	defer unlock()
+
+	if overlapping, err := worktree.UncommittedOverlaps(rec.Repo, rec.Branch); err != nil {
+		return fail(err)
+	} else if len(overlapping) > 0 {
+		return fail(fmt.Errorf("working tree has uncommitted changes in files touched by %s: %s; commit or stash them before merging", rec.Branch, strings.Join(overlapping, ", ")))
+	}
+
+	if worktree.SupportsMergeTree(rec.Repo) {
+		res, err := worktree.MergeTree(rec.Repo, "HEAD", rec.Branch)
+		if err != nil {
+			return fail(err)
+		}
+		if !res.Clean {
+			rec.ExitClass = "merge_conflict"
+			_ = runsStore().Append(rec)
+
+			body := map[string]any{
+				"id":        rec.ID,
+				"status":    "merge_conflict",
+				"conflicts": res.Conflicts,
+				"hint":      fmt.Sprintf("dispatch run --resume %s (pedindo rebase), ou resolver a mão", rec.ID),
+			}
+			printJSON(body)
+			return 1
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "dispatch: warning: git version does not support merge-tree --write-tree; skipping pre-merge conflict check")
+	}
+
+	headBeforeMerge, _ := worktree.Head(rec.Repo)
 	out, err := worktree.Merge(rec.Repo, rec.Branch, rec.ID)
 	if err != nil {
-		fatal(err)
+		return fail(err)
 	}
+	mergeSHA, _ := worktree.Head(rec.Repo)
+
 	cleaned := true
 	if err := worktree.Remove(rec.Repo, rec.Worktree, rec.Branch, false); err != nil {
 		cleaned = false
@@ -811,7 +856,31 @@ func merge(args []string) int {
 	if note := mergeNote(rec, *force); note != "" {
 		body["note"] = note
 	}
+
+	postVerifyFailed := false
+	if !*noVerify && verify.HasConfig(rec.Repo) {
+		vRes, vErr := verify.Run(context.Background(), verify.Options{
+			Repo:     rec.Repo,
+			Worktree: rec.Repo,
+			BaseSHA:  headBeforeMerge,
+		})
+		if vErr != nil || vRes.Status == verify.StatusFailed || vRes.Status == verify.StatusError {
+			postVerifyFailed = true
+			body["post_merge_verification"] = "failed"
+			revertCmd := fmt.Sprintf("git revert -m 1 %s", mergeSHA)
+			body["revert"] = revertCmd
+			if len(vRes.Checks) > 0 {
+				body["verify"] = vRes
+			}
+		} else if vRes.Status == verify.StatusVerified {
+			body["post_merge_verification"] = "passed"
+		}
+	}
+
 	printJSON(body)
+	if postVerifyFailed {
+		return 1
+	}
 	return 0
 }
 
