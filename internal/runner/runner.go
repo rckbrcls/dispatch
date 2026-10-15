@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +54,7 @@ type Deps struct {
 
 // Options describes a request. For resumes, Resume names the earlier run.
 type Options struct {
+	Filters    store.Filters
 	Tier       adapter.Tier
 	Prompt     string
 	Dir        string
@@ -89,30 +89,11 @@ func (d Deps) adapter(name string) adapter.Adapter {
 // quota, pace, history and cooldowns, and ranks them. Table order is kept
 // among equals.
 func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bool, prefer, avoid []string) ([]router.Candidate, []string) {
-	var cs []router.Candidate
-	var rejected []string
-	for _, e := range d.Table.Tiers[tier] {
-		a := d.adapter(e.Agent)
-		if a == nil || !d.installed(a.Binary()) {
-			continue
-		}
-		if needReadOnly && !a.Capabilities().ReadOnly {
-			rejected = append(rejected, a.Name()+" does not support readOnly")
-			continue
-		}
-		if !needReadOnly && !a.Capabilities().FileEditing {
-			rejected = append(rejected, a.Name()+" does not support fileEditing")
-			continue
-		}
-		c := router.Candidate{Adapter: a, Model: e.Model}
-		if slices.Contains(prefer, e.Agent) {
-			c.Bias += router.PreferBias
-		}
-		if slices.Contains(avoid, e.Agent) {
-			c.Bias += router.AvoidBias
-		}
-		cs = append(cs, c)
-	}
+	cs, rejected := d.selectCandidates(Options{Tier: tier, ReadOnly: needReadOnly, Prefer: prefer, Avoid: avoid})
+	return d.evaluate(ctx, cs, true), rejected
+}
+
+func (d Deps) evaluate(ctx context.Context, cs []router.Candidate, live bool) []router.Candidate {
 
 	// One quota fetch per agent, in parallel; ModelQuoter adapters resolve
 	// per model, others share one quota across their models.
@@ -122,6 +103,9 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 	}
 	var wg sync.WaitGroup
 	for _, idxs := range byAgent {
+		if !live {
+			continue
+		}
 		wg.Add(1)
 		go func(idxs []int) {
 			defer wg.Done()
@@ -156,18 +140,35 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 	}
 	wg.Wait()
 
-	now := d.Now()
+	now := time.Now()
+	if d.Now != nil {
+		now = d.Now()
+	}
 	cool := d.Store.Cooldowns(now)
 	recorded := map[string]bool{}
 	for i := range cs {
 		c := &cs[i]
 		_, c.CooledDown = cool[c.Adapter.Name()]
+		if !live {
+			key := c.Adapter.Name()
+			if key == "antigravity" {
+				key += ":Claude and GPT models"
+				if strings.Contains(strings.ToLower(c.Model), "gemini") {
+					key = "antigravity:Gemini Models"
+				}
+			}
+			for _, snap := range d.Store.Snapshots(key) {
+				if snap.ResetsAt.After(now) {
+					c.Quota = &adapter.Quota{Key: key, UsedPercent: snap.UsedPercent, ResetsAt: snap.ResetsAt, WindowMinutes: snap.WindowMinutes}
+				}
+			}
+		}
 		if c.Quota == nil {
 			continue
 		}
 		router.Evaluate(c, now)
 		key := c.Quota.Key
-		if !recorded[key] {
+		if live && !recorded[key] {
 			recorded[key] = true
 			d.Store.RecordSnapshot(key, pace.Snapshot{
 				UsedPercent: c.Quota.UsedPercent, ResetsAt: c.Quota.ResetsAt,
@@ -181,7 +182,7 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 			}
 		}
 	}
-	return router.Rank(cs), rejected
+	return router.Rank(cs)
 }
 
 // block probes the CLI when it can. DEGRADED still runs and returns a note
@@ -201,6 +202,20 @@ func (d Deps) block(ctx context.Context, rec *store.Record, c router.Candidate, 
 		}
 	} else if miss := missingFlags(report, "fileEditing"); len(miss) > 0 {
 		return fmt.Sprintf("%s does not support fileEditing (missing %s)", c.Adapter.Name(), strings.Join(miss, ", "))
+	}
+	if c.Model != "" {
+		for _, f := range report.Flags {
+			if !f.Present && (f.Name == "--model" || f.Name == "-m") {
+				return "model selection unavailable (missing " + f.Name + ")"
+			}
+		}
+	}
+	if c.Effort != "" && c.Adapter.Capabilities().EffortMode == "config" {
+		for _, f := range report.Flags {
+			if !f.Present && f.Name == "-c" {
+				return "effort configuration unavailable (missing -c)"
+			}
+		}
 	}
 	if resume {
 		if miss := missingFlags(report, "sessionResume"); len(miss) > 0 {
@@ -236,6 +251,7 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 		Prompt: o.Prompt, Dir: o.Dir, ReadOnly: o.ReadOnly, CreatedAt: d.Now(),
 		TimeoutSec: int(o.Timeout / time.Second), NoWorktree: o.NoWorktree, NoVerify: o.NoVerify,
 		Profile: o.Profile, Prefer: o.Prefer, Avoid: o.Avoid,
+		Requested: &o.Filters,
 	}
 	if o.Resume != "" {
 		prev, err := d.Store.Get(o.Resume)
@@ -249,11 +265,21 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 		rec.Agent, rec.Model, rec.SessionID = prev.Agent, prev.Model, prev.SessionID
 		rec.Repo, rec.Worktree, rec.Branch = prev.Repo, prev.Worktree, prev.Branch
 		rec.BaseSHA = prev.BaseSHA
+		rec.Provider, rec.Effort, rec.Resolved = prev.Provider, prev.Effort, prev.Resolved
+		if o.Filters.Agent != "" && o.Filters.Agent != prev.Agent || o.Filters.Model != "" && !matchesModel(prev.Model, o.Filters.Model) || o.Filters.Provider != "" && o.Filters.Provider != ProviderOf(prev.Agent, prev.Model) || o.Filters.Effort != "" && o.Filters.Effort != prev.Effort {
+			return rec, fmt.Errorf("resume filters conflict with existing session")
+		}
 		if rec.Dir == "" {
 			rec.Dir = prev.Dir
 		}
-	} else if !adapter.Tier(rec.Tier).Valid() {
+	} else if !adapter.Tier(rec.Tier).Valid() && !(rec.Tier == "" && (o.Filters.Model != "" || o.Filters.Provider != "")) {
 		return rec, fmt.Errorf("invalid tier %q (want easy|normal|hard)", rec.Tier)
+	}
+	if o.Resume != "" {
+		o.Tier = adapter.Tier(rec.Tier)
+	}
+	if err := validateOptions(o); err != nil {
+		return rec, err
 	}
 	return rec, d.Store.Append(rec)
 }
@@ -332,7 +358,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if !a.Capabilities().SessionResume {
 			return finish(store.Failed, a.Name()+" does not support session resume")
 		}
-		cands = []router.Candidate{{Adapter: a, Model: rec.Model}}
+		cands = []router.Candidate{{Adapter: a, Model: rec.Model, Provider: rec.Provider, Effort: rec.Effort}}
 		resumeSession = rec.SessionID
 		if rec.Worktree != "" {
 			if _, err := os.Stat(rec.Worktree); err == nil {
@@ -345,7 +371,32 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		}
 	} else {
 		var rejected []string
-		cands, rejected = d.Candidates(ctx, adapter.Tier(rec.Tier), rec.ReadOnly, rec.Prefer, rec.Avoid)
+		o := Options{Tier: adapter.Tier(rec.Tier), ReadOnly: rec.ReadOnly, Prefer: rec.Prefer, Avoid: rec.Avoid}
+		if rec.Requested != nil {
+			o.Filters = *rec.Requested
+		}
+		cands, rejected = d.selectCandidates(o)
+		cands = d.evaluate(ctx, cands, true)
+		if o.Filters.Relax {
+			fallback := o
+			fallback.Filters = store.Filters{}
+			if fallback.Tier == "" {
+				fallback.Tier = adapter.TierNormal
+			}
+			extra, _ := d.selectCandidates(fallback)
+			for _, c := range d.evaluate(ctx, extra, true) {
+				duplicate := false
+				for _, prev := range cands {
+					if prev.Adapter.Name() == c.Adapter.Name() && prev.Model == c.Model && prev.Effort == c.Effort {
+						duplicate = true
+					}
+				}
+				if !duplicate {
+					c.Note = joinNote(c.Note, "--relax: filters relaxed to tier routing")
+					cands = append(cands, c)
+				}
+			}
+		}
 		if len(cands) == 0 {
 			if len(rejected) > 0 {
 				return finish(store.Failed, strings.Join(rejected, "; "))
@@ -371,7 +422,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 				}
 				dir = filepath.Join(path, worktree.Rel(root, dir))
 				if worktree.Dirty(root) {
-					rec.Note = "checkout has uncommitted changes; the worktree was cut from HEAD and does not include them"
+					rec.Note = joinNote(rec.Note, "checkout has uncommitted changes; the worktree was cut from HEAD and does not include them")
 				}
 			}
 		}
@@ -379,6 +430,10 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 
 	var skipped []string
 	for _, c := range cands {
+		if _, cooling := d.Store.Cooldowns(d.now())[c.Adapter.Name()]; cooling {
+			skipped = append(skipped, c.Adapter.Name()+" in cooldown")
+			continue
+		}
 		if msg := d.block(ctx, &rec, c, resumeSession != ""); msg != "" {
 			skipped = append(skipped, msg)
 			continue
@@ -389,13 +444,21 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		attemptStart := d.Now()
 		rec.AgentPID = 0
 		rec.Status, rec.Agent, rec.Model = store.Running, c.Adapter.Name(), c.Model
-		rec.Provider = ProviderOf(rec.Agent, rec.Model)
-		rec.Effort = EffortOf(rec.Model)
+		rec.Provider = c.Provider
+		if rec.Provider == "" {
+			rec.Provider = ProviderOf(rec.Agent, rec.Model)
+		}
+		rec.Effort = c.Effort
+		if rec.Effort == "" {
+			rec.Effort = EffortOf(rec.Model)
+		}
+		rec.Resolved = &store.Filters{Provider: rec.Provider, Model: rec.Model, Agent: rec.Agent, Effort: rec.Effort}
+		rec.Note = joinNote(rec.Note, c.Note)
 		if err := d.Store.Append(rec); err != nil {
 			return rec, err
 		}
 		req := adapter.Request{
-			Prompt: rec.Prompt, Tier: adapter.Tier(rec.Tier), Dir: dir, ReadOnly: rec.ReadOnly,
+			Effort: rec.Effort, Prompt: rec.Prompt, Tier: adapter.Tier(rec.Tier), Dir: dir, ReadOnly: rec.ReadOnly,
 			Started: func(pid int) error {
 				rec.AgentPID = pid
 				return d.Store.Append(rec)

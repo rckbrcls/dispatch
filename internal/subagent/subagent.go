@@ -14,6 +14,11 @@ import (
 )
 
 type Profile struct {
+	Provider     string   `json:"provider,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	Effort       string   `json:"effort,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
+	Relax        bool     `json:"relax,omitempty"`
 	Tier         string   `json:"tier,omitempty"`
 	ReadOnly     bool     `json:"readonly,omitempty"`
 	Instructions string   `json:"instructions,omitempty"`
@@ -82,6 +87,12 @@ func ProjectPath(dir string) string { return filepath.Join(dir, ".dispatch", "ag
 func Validate(name string, p Profile, known map[string]bool) []string {
 	var out []string
 	add := func(f string, a ...any) { out = append(out, name+": "+fmt.Sprintf(f, a...)) }
+	if p.Effort != "" && !adapter.ValidEffort(p.Effort) {
+		add("invalid effort %q", p.Effort)
+	}
+	if p.Agent != "" && !known[p.Agent] {
+		add("unknown agent %q", p.Agent)
+	}
 	if p.Tier != "" && !adapter.Tier(p.Tier).Valid() {
 		add("invalid tier %q (want easy|normal|hard)", p.Tier)
 	}
@@ -107,7 +118,7 @@ func Validate(name string, p Profile, known map[string]bool) []string {
 			}
 		}
 	}
-	if p.Instructions == "" && p.Tier == "" && len(p.Prefer) == 0 && len(p.Avoid) == 0 {
+	if p.Provider == "" && p.Model == "" && p.Agent == "" && p.Effort == "" && p.Instructions == "" && p.Tier == "" && len(p.Prefer) == 0 && len(p.Avoid) == 0 {
 		add("empty profile")
 	}
 	return out

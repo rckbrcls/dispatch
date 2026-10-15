@@ -41,7 +41,17 @@ type Attempt struct {
 	ExitClass  string `json:"exitClass,omitempty"` // rate_limit|crash|merge_conflict|failed
 }
 
+type Filters struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+	Agent    string `json:"agent,omitempty"`
+	Relax    bool   `json:"relax,omitempty"`
+}
+
 type Record struct {
+	Requested    *Filters       `json:"requested,omitempty"`
+	Resolved     *Filters       `json:"resolved,omitempty"`
 	ID           string         `json:"id"`
 	Status       Status         `json:"status"`
 	Tier         string         `json:"tier"`

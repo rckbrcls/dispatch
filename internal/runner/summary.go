@@ -3,71 +3,23 @@ package runner
 import (
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
+	"dispatch/internal/adapter"
 	"dispatch/internal/store"
 	"dispatch/internal/verify"
 )
 
 const SummarySchema = "dispatch.run-summary.v1"
 
-// effortSuffixes are the model-name tails that name an effort level.
-var effortSuffixes = map[string]bool{
-	"none": true, "minimal": true, "low": true, "medium": true,
-	"high": true, "xhigh": true, "max": true,
-}
-
 var (
 	conflictRe = regexp.MustCompile(`(?i)merge conflict|conflict marker|\bCONFLICT\b|<<<<<<<`)
 	crashRe    = regexp.MustCompile(`(?i)\bpanic\b|segmentation fault|core dumped|signal:|exit status 13[479]|\baborted\b`)
 )
 
-// EffortOf returns the effort encoded as the last hyphen-suffix of a model
-// name (gemini-3.8-flash-high → high). An empty result means the name does
-// not carry one; callers leave the field absent.
-func EffortOf(model string) string {
-	i := strings.LastIndex(model, "-")
-	if i < 0 || i+1 >= len(model) {
-		return ""
-	}
-	suf := strings.ToLower(model[i+1:])
-	if effortSuffixes[suf] {
-		return suf
-	}
-	return ""
-}
-
-// ProviderOf derives a provider from the model name, then from the agent.
-// An empty result means unknown.
-func ProviderOf(agent, model string) string {
-	m := strings.ToLower(model)
-	switch {
-	case strings.Contains(m, "gemini"):
-		return "google"
-	case strings.Contains(m, "claude"):
-		return "anthropic"
-	case strings.Contains(m, "grok"):
-		return "xai"
-	case strings.Contains(m, "composer"):
-		return "cursor"
-	case strings.Contains(m, "gpt-") || strings.HasPrefix(m, "gpt") || strings.Contains(m, "codex") ||
-		strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4"):
-		return "openai"
-	}
-	switch strings.ToLower(agent) {
-	case "codex":
-		return "openai"
-	case "grok":
-		return "xai"
-	case "cursor":
-		return "cursor"
-	case "antigravity":
-		return "google"
-	default:
-		return ""
-	}
-}
+// EffortOf and ProviderOf retain the telemetry API.
+func EffortOf(model string) string          { return adapter.EffortOf(model) }
+func ProviderOf(agent, model string) string { return adapter.ProviderOf(agent, model) }
 
 // classOf labels an agent error. "failed" is the generic bucket.
 func classOf(msg string) string {
@@ -140,6 +92,8 @@ func tries(rec store.Record) int {
 // RunSummary is the dispatch.run-summary.v1 document. It never carries the
 // agent's free text; that stays behind `dispatch result <id> --section agent`.
 type RunSummary struct {
+	Requested    *store.Filters    `json:"requested,omitempty"`
+	Resolved     *store.Filters    `json:"resolved,omitempty"`
 	Schema       string            `json:"schema"`
 	ID           string            `json:"id"`
 	Status       store.Status      `json:"status"`
@@ -170,7 +124,8 @@ type RunSummary struct {
 // Summarize builds a RunSummary. Absent numbers stay absent.
 func Summarize(rec store.Record) RunSummary {
 	s := RunSummary{
-		Schema:       SummarySchema,
+		Schema:    SummarySchema,
+		Requested: rec.Requested, Resolved: rec.Resolved,
 		ID:           rec.ID,
 		Status:       rec.Status,
 		Agent:        rec.Agent,
@@ -224,6 +179,15 @@ func (s RunSummary) Text() string {
 		s.Status, unk(s.Agent), unk(s.Model), unk(s.Tier), fmtMs(s.DurationMs), fmtFiles(s), unk(s.Verification), s.Attempts)
 	line2 := fmt.Sprintf("branch=%s worktree=%s", unk(s.Branch), unk(s.Worktree))
 	line3 := fmt.Sprintf("details: dispatch result %s --section summary|verification|files|agent|attempts|meta", s.ID)
+	if s.Error != "" {
+		line2 += " error=" + s.Error
+	}
+	if s.Note != "" {
+		line2 += " note=" + s.Note
+	}
+	if s.Requested != nil {
+		line2 += fmt.Sprintf(" requested=%+v resolved=%+v", *s.Requested, s.Resolved)
+	}
 	return line1 + "\n" + line2 + "\n" + line3 + "\n"
 }
 

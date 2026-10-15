@@ -67,3 +67,27 @@ func TestNewUUID(t *testing.T) {
 		t.Errorf("bad uuid %s", u)
 	}
 }
+
+func TestEffortApplication(t *testing.T) {
+	args := codexArgs(Request{Effort: "xhigh"}, "gpt-large", "result.txt")
+	found := false
+	for i, arg := range args {
+		if arg == "-c" && i+1 < len(args) && args[i+1] == `model_reasoning_effort="xhigh"` {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal(args)
+	}
+	if (Codex{}).Capabilities().EffortMode != "config" {
+		t.Fatal("codex effort control missing")
+	}
+	if (Antigravity{}).Capabilities().EffortMode != "model-suffix" {
+		t.Fatal("agy effort control missing")
+	}
+	for _, a := range []Adapter{Cursor(), Grok()} {
+		if a.Capabilities().EffortMode != "" {
+			t.Fatal("unverified independent effort control", a.Name())
+		}
+	}
+}

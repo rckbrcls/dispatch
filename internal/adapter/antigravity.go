@@ -30,7 +30,7 @@ var antigravityProbeFlags = []probeFlag{
 
 var antigravityRun = cliAdapter{
 	name: "antigravity", binary: "agy",
-	caps:        Capabilities{SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true, Usage: true},
+	caps:        Capabilities{EffortMode: "model-suffix", SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true, Usage: true},
 	flags:       antigravityProbeFlags,
 	listArgs:    []string{"models"},
 	parseModels: parseAgyModels,

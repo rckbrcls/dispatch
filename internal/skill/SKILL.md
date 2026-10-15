@@ -6,7 +6,7 @@ description: Delega uma tarefa a outro agente de código (Codex, Cursor, Grok, A
 # dispatch
 
 CLI que roteia uma tarefa para um agente instalado, por **tier**, e devolve resultado compacto.
-Você não escolhe CLI nem modelo: o `dispatch` escolhe pela tabela de tiers e pela folga de quota,
+O `dispatch` escolhe pela tabela de tiers e pela folga de quota,
 e faz fallback se um agente falhar. Você é o maestro: delega, lê resumos curtos, integra.
 
 ## Quando delegar (e quando não)
@@ -97,6 +97,12 @@ dispatch run --as reviewer --dir <repo> --background - <<< "revise o branch X"
 Flags explícitas (`--tier`, `--readonly`, `--timeout`) vencem o perfil. `prefer`/`avoid` são **pesos**
 no ranking, não filtros: um agente evitado ainda roda se for o único com folga.
 
+`run` e perfis aceitam `--provider`, `--model`, `--effort low|medium|high|xhigh`, `--agent` (flags vencem o perfil).
+Cada filtro restringe o fallback; sem candidato, falha. `--relax` permite voltar ao tier e registra `note`.
+Tier é opcional com provider/model; se informado, vale a interseção. Effort incompatível é recusado.
+`dispatch route [mesmos filtros] [--json]` explica candidatos/eliminações/vencedor usando quota em cache, sem executar.
+O resumo expõe `requested`/`resolved`; `stats --by requested|resolved` agrega esses campos.
+
 ## Flags úteis
 
 - `--readonly`: revisão/leitura; o agente não edita arquivos. Use para revisores.
@@ -108,7 +114,7 @@ no ranking, não filtros: um agente evitado ainda roda se for o único com folga
 ## Regras
 
 - **Sem delegação recursiva:** dentro de um run do dispatch o comando é recusado (`DISPATCH_DEPTH`).
-- **Modelos Claude não rodam em CLIs de terceiros:** o dispatch os recusa. Não peça modelo; peça tier.
+- **Modelos Claude não rodam em CLIs de terceiros:** o dispatch os recusa.
 - **Não reenvie igual:** `FAILED` com candidatos esgotados significa melhorar o brief (1–2 frases) ou
   subir um tier. `TIMED_OUT`/`CANCELLED` não fazem fallback.
 - **Um escritor por diretório** e sem `push`, deploy ou segredos no brief.

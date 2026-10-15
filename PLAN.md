@@ -14,7 +14,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 3 | `RunSummary` v1 + `stats` **(feita)** | 2 | P/M |
 | 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
 | 4 | Adapters (`doctor`, capabilities) + quota tipada **(feita)** | n/d (pode ir em paralelo à 3) | M |
-| 5c | Filtros explícitos: `--provider`, `--model`, `--effort`, `--agent` | 4 (capabilities) | M |
+| 5c | Filtros explícitos: `--provider`, `--model`, `--effort`, `--agent` **(feita)** | 4 (capabilities) | M |
 | 5b | Prioridade `speed|balanced|quality` no roteador | 3b (dados de latência) | P/M |
 | 5 | Merge gate **(feita)** | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |
@@ -109,7 +109,7 @@ Pronto quando: `dispatch stats --by model --since 30d` e `dispatch stats --capac
 - Merge serializado por branch alvo e reverificação depois de integrar.
 - Pronto quando: dois runs que editam o mesmo arquivo são detectados antes de tocar o working tree.
 
-## Fase 5c — Filtros explícitos no roteamento
+## Fase 5c — Filtros explícitos no roteamento (feita)
 Hoje o chamador só diz o tier. Passa a poder restringir o espaço de busca; o roteador continua escolhendo o que sobrar por pace/rank.
 
 Vocabulário (a distinção importa): **provider** = quem serve o modelo (openai, google, xai...); **agent** = o CLI que o executa (codex, cursor, grok, antigravity); **model** e **effort** como já existem. Um mesmo modelo pode estar disponível por mais de um agent, então escolher o modelo não escolhe o agent.

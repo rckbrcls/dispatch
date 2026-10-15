@@ -262,3 +262,13 @@ func findRow(t *testing.T, rows []Row, key string) Row {
 	t.Fatalf("missing %s in %+v", key, rows)
 	return Row{}
 }
+
+func TestRoutingFilterAggregations(t *testing.T) {
+	r := store.Record{ID: "filters", Status: store.Completed, Requested: &store.Filters{Provider: "google"}, Resolved: &store.Filters{Provider: "google", Model: "gemini-fast", Agent: "antigravity", Effort: "high"}}
+	for _, by := range []string{"requested", "resolved"} {
+		report, err := Compute([]store.Record{r}, Options{By: by})
+		if err != nil || len(report.Rows) != 1 || !strings.Contains(report.Rows[0].Key, "google") {
+			t.Fatalf("%+v %v", report, err)
+		}
+	}
+}

@@ -21,7 +21,7 @@ type Codex struct{}
 func (Codex) Name() string   { return "codex" }
 func (Codex) Binary() string { return "codex" }
 func (Codex) Capabilities() Capabilities {
-	return Capabilities{SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true, Usage: true}
+	return Capabilities{EffortMode: "config", Efforts: []string{"low", "medium", "high", "xhigh"}, SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true, Usage: true}
 }
 func (Codex) UsageSource() string { return SourceCodexAppServer }
 
@@ -232,25 +232,7 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	out.Close()
 	defer os.Remove(out.Name())
 
-	sandboxMode := "workspace-write"
-	if req.ReadOnly {
-		sandboxMode = "read-only"
-	}
-	// `exec resume` has no -s/-C flags, so sandbox goes through config and
-	// the working directory through the process.
-	args := []string{"exec"}
-	if req.ResumeSession != "" {
-		args = append(args, "resume")
-	}
-	args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", sandboxMode),
-		"--json", "--skip-git-repo-check", "-o", out.Name())
-	if model != "" {
-		args = append(args, "-m", model)
-	}
-	if req.ResumeSession != "" {
-		args = append(args, req.ResumeSession)
-	}
-	args = append(args, "-") // prompt from stdin
+	args := codexArgs(req, model, out.Name())
 	cmd := exec.CommandContext(ctx, "codex", args...)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
@@ -294,4 +276,30 @@ func codexThreadID(stdout []byte) string {
 		}
 	}
 	return ""
+}
+
+func codexArgs(req Request, model, outputPath string) []string {
+	sandboxMode := "workspace-write"
+	if req.ReadOnly {
+		sandboxMode = "read-only"
+	}
+	// `exec resume` has no -s/-C flags, so sandbox goes through config and
+	// the working directory through the process.
+	args := []string{"exec"}
+	if req.ResumeSession != "" {
+		args = append(args, "resume")
+	}
+	args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", sandboxMode),
+		"--json", "--skip-git-repo-check", "-o", outputPath)
+	if req.Effort != "" {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", req.Effort))
+	}
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	if req.ResumeSession != "" {
+		args = append(args, req.ResumeSession)
+	}
+	args = append(args, "-") // prompt from stdin
+	return args
 }

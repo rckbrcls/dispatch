@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"dispatch/internal/runner"
 	"dispatch/internal/store"
 	"dispatch/internal/verify"
 	"dispatch/internal/worktree"
@@ -479,5 +480,54 @@ func TestVerifyInit(t *testing.T) {
 	}
 	if string(b) != verify.Example || !strings.Contains(string(b), `"parse": "gotest"`) {
 		t.Fatalf("%s", b)
+	}
+}
+
+func TestProfileRoutingFiltersAndExplicitOverrides(t *testing.T) {
+	h, _ := setupTestEnv(t)
+	if err := os.MkdirAll(h, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h, "agents.json"), []byte(`{"agents":{"review":{"provider":"google","model":"gemini-pro","effort":"high","agent":"antigravity","relax":true}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	o := runner.Options{}
+	if err := applyProfile(&o, "review", map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	if o.Filters.Provider != "google" || o.Filters.Model != "gemini-pro" || o.Filters.Effort != "high" || o.Filters.Agent != "antigravity" || !o.Filters.Relax {
+		t.Fatalf("%+v", o)
+	}
+	o.Filters = store.Filters{Provider: "openai", Model: "gpt-large", Effort: "low", Agent: "codex"}
+	if err := applyProfile(&o, "review", map[string]bool{"provider": true, "model": true, "effort": true, "agent": true, "relax": true}); err != nil {
+		t.Fatal(err)
+	}
+	if o.Filters.Provider != "openai" || o.Filters.Model != "gpt-large" || o.Filters.Effort != "low" || o.Filters.Agent != "codex" || o.Filters.Relax {
+		t.Fatal(o.Filters)
+	}
+}
+
+func TestRouteCommandDoesNotRunCLIsOrWriteState(t *testing.T) {
+	h, _ := setupTestEnv(t)
+	dir := t.TempDir()
+	// A binary may be installed, but even --help must not run in a route.
+	marker := filepath.Join(dir, "called")
+	script := "#!/bin/sh\ntouch '" + marker + "'\nexit 99\n"
+	if err := os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	before, _ := os.ReadDir(h)
+	var code int
+	out := captureStdout(t, func() { code = runCommand([]string{"--model", "gpt-5.6-terra", "--effort", "high", "--json"}, true) })
+	after, _ := os.ReadDir(h)
+	if code != 0 || !strings.Contains(out, `"winner"`) || !strings.Contains(out, `"effort": "high"`) {
+		t.Fatalf("%d %s", code, out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("CLI invoked")
+	}
+	if len(before) != len(after) {
+		t.Fatal("state directory changed")
 	}
 }

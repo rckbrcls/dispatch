@@ -8,10 +8,26 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func server(t *testing.T, sum string) *httptest.Server {
+// handlerTransport exercises HTTP request/response handling without a socket.
+type handlerTransport struct{ handler http.Handler }
+
+func (tr handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	recorder := httptest.NewRecorder()
+	tr.handler.ServeHTTP(recorder, req)
+	return recorder.Result(), nil
+}
+
+type testServer struct {
+	URL    string
+	Client *http.Client
+}
+
+func server(t *testing.T, sum string) testServer {
+	t.Helper()
 	bin := []byte("new-binary")
 	if sum == "" {
 		h := sha256.Sum256(bin)
@@ -23,14 +39,12 @@ func server(t *testing.T, sum string) *httptest.Server {
 		fmt.Fprintf(w, "%s  %s\n", sum, AssetName())
 	})
 	mux.HandleFunc("/v9.9.9/"+AssetName(), func(w http.ResponseWriter, r *http.Request) { w.Write(bin) })
-	s := httptest.NewServer(mux)
-	t.Cleanup(s.Close)
-	return s
+	return testServer{URL: "https://releases.test", Client: &http.Client{Transport: handlerTransport{handler: mux}}}
 }
 
 func TestLatestFetchReplace(t *testing.T) {
 	srv := server(t, "")
-	src := Source{APIURL: srv.URL + "/latest", BaseURL: srv.URL + "/{tag}"}
+	src := Source{Client: srv.Client, APIURL: srv.URL + "/latest", BaseURL: srv.URL + "/{tag}"}
 	tag, err := src.Latest(t.Context())
 	if err != nil || tag != "v9.9.9" {
 		t.Fatalf("latest = %q, %v", tag, err)
@@ -52,8 +66,8 @@ func TestLatestFetchReplace(t *testing.T) {
 
 func TestFetchRejectsBadChecksum(t *testing.T) {
 	srv := server(t, "deadbeef")
-	src := Source{BaseURL: srv.URL + "/{tag}"}
-	if _, err := src.Fetch(t.Context(), "v9.9.9", AssetName()); err == nil {
-		t.Fatal("expected checksum mismatch")
+	src := Source{Client: srv.Client, BaseURL: srv.URL + "/{tag}"}
+	if _, err := src.Fetch(t.Context(), "v9.9.9", AssetName()); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("expected checksum mismatch, got %v", err)
 	}
 }
