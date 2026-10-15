@@ -1,0 +1,21 @@
+{
+  "tiers": {
+    "easy": [
+      {"agent": "cursor", "model": "composer-2.5"},
+      {"agent": "antigravity", "model": "gemini-3.8-flash-low"},
+      {"agent": "grok", "model": "grok-4.7-build-fast"},
+      {"agent": "codex", "model": "gpt-5.6-luna"}
+    ],
+    "normal": [
+      {"agent": "codex", "model": "gpt-5.6-terra"},
+      {"agent": "grok", "model": "grok-4.7"},
+      {"agent": "antigravity", "model": "gemini-3.8-flash-high"},
+      {"agent": "cursor", "model": "grok-4.7-medium"}
+    ],
+    "hard": [
+      {"agent": "codex", "model": "gpt-6.1-sol"},
+      {"agent": "cursor", "model": "gpt-5.6-sol-xhigh"},
+      {"agent": "grok", "model": "grok-4.7"}
+    ]
+  }
+}
