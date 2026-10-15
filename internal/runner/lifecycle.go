@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"dispatch/internal/process"
 	"dispatch/internal/store"
 	"dispatch/internal/worktree"
 )
@@ -29,17 +30,6 @@ func alive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
-}
-
-func signalProcess(pid int, signal syscall.Signal) error {
-	if pid == 0 {
-		return nil
-	}
-	err := syscall.Kill(pid, signal)
-	if errors.Is(err, syscall.ESRCH) {
-		return nil
-	}
-	return err
 }
 
 // Reconcile preserves orphaned work so it can be inspected or recovered.
@@ -81,8 +71,12 @@ func (d Deps) Reconcile(ctx context.Context) error {
 			continue
 		}
 		rec = latest
-		if rec.AgentPID > 0 && alive(-rec.AgentPID) {
-			if err := signalProcess(-rec.AgentPID, syscall.SIGTERM); err != nil {
+		if rec.AgentPID > 0 && (alive(rec.AgentPID) || alive(-rec.AgentPID)) {
+			tree, err := process.Capture(rec.AgentPID)
+			if err != nil {
+				return err
+			}
+			if err := tree.Stop(ctx, 5*time.Second); err != nil {
 				return err
 			}
 		}
@@ -112,61 +106,29 @@ func (d Deps) Cancel(ctx context.Context, id string) (store.Record, error) {
 	if orphan {
 		ownerPID = 0
 	}
-	if rec.AgentPID > 0 {
-		if err := signalProcess(-rec.AgentPID, syscall.SIGTERM); err != nil {
-			return rec, err
-		}
+	if ownerPID <= 0 && rec.AgentPID <= 0 {
+		return rec, nil
 	}
-	if ownerPID > 0 {
-		if err := signalProcess(ownerPID, syscall.SIGTERM); err != nil {
-			return rec, err
-		}
+	tree, err := process.Capture(rec.AgentPID)
+	if err != nil {
+		return rec, err
 	}
-	stopped := func() bool { return !alive(ownerPID) && (rec.AgentPID <= 0 || !alive(-rec.AgentPID)) }
-	for phase := 0; phase < 2; phase++ {
-		deadline := time.NewTimer(5 * time.Second)
-		tick := time.NewTicker(25 * time.Millisecond)
-		waiting := true
-		for waiting && !stopped() {
-			select {
-			case <-ctx.Done():
-				deadline.Stop()
-				tick.Stop()
-				return rec, ctx.Err()
-			case <-deadline.C:
-				waiting = false
-			case <-tick.C:
-			}
-		}
-		deadline.Stop()
-		tick.Stop()
-		if stopped() {
-			if latest, err := d.Store.Get(id); err != nil {
-				return rec, err
-			} else {
-				rec = latest
-			}
-			if orphan {
-				return rec, nil
-			}
-			rec.Status, rec.Error, rec.FinishedAt = store.Cancelled, "cancelled", d.Now()
-			return rec, d.Store.Append(rec)
-		}
-		if phase == 0 {
-			if rec.AgentPID > 0 {
-				if err := signalProcess(-rec.AgentPID, syscall.SIGKILL); err != nil {
-					return rec, err
-				}
-			}
-			// Recheck identity before escalating the owner.
-			if ownerPID > 0 && (rec.ProcStart == "" || processStart(ctx, ownerPID) == rec.ProcStart) {
-				if err := signalProcess(ownerPID, syscall.SIGKILL); err != nil {
-					return rec, err
-				}
-			}
-		}
+	if err := tree.Include(ownerPID, rec.ProcStart); err != nil {
+		return rec, err
 	}
-	return rec, fmt.Errorf("run %s processes still exist after cancellation", rec.ID)
+	if err := tree.Stop(ctx, 5*time.Second); err != nil {
+		return rec, err
+	}
+	if latest, err := d.Store.Get(id); err != nil {
+		return rec, err
+	} else {
+		rec = latest
+	}
+	if orphan {
+		return rec, nil
+	}
+	rec.Status, rec.Error, rec.FinishedAt = store.Cancelled, "cancelled", d.Now()
+	return rec, d.Store.Append(rec)
 }
 
 // Recover commits preserved work, without claiming that it was verified.

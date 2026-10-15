@@ -1,15 +1,17 @@
 package adapter
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"syscall"
 	"time"
+
+	"dispatch/internal/process"
 )
 
-var ErrProcessesAlive = errors.New("agent process group still exists")
+var ErrProcessesAlive = errors.New("agent process cleanup incomplete")
 
 // ownGroup retains immediate group cleanup for short quota probes.
 func ownGroup(cmd *exec.Cmd) {
@@ -24,31 +26,21 @@ func runAgent(cmd *exec.Cmd, started func(int) error) error {
 	cmd.WaitDelay = 5 * time.Second
 	var escalation chan error
 	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		if errors.Is(err, syscall.ESRCH) {
-			err = os.ErrProcessDone
-		}
+		tree, err := process.Capture(cmd.Process.Pid)
 		escalation = make(chan error, 1)
+		if err != nil {
+			// Do not claim successful cancellation when ancestry cannot be inspected.
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			escalation <- fmt.Errorf("%w: %v", ErrProcessesAlive, err)
+			close(escalation)
+			return err
+		}
+		err = tree.Signal(syscall.SIGTERM)
 		go func() {
 			defer close(escalation)
-			deadline := time.Now().Add(cmd.WaitDelay)
-			for syscall.Kill(-cmd.Process.Pid, 0) != syscall.ESRCH {
-				if time.Now().After(deadline) {
-					if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-						escalation <- fmt.Errorf("%w: %v", ErrProcessesAlive, err)
-						return
-					}
-					deadline = time.Now().Add(5 * time.Second)
-					for syscall.Kill(-cmd.Process.Pid, 0) != syscall.ESRCH {
-						if time.Now().After(deadline) {
-							escalation <- ErrProcessesAlive
-							return
-						}
-						time.Sleep(20 * time.Millisecond)
-					}
-					return
-				}
-				time.Sleep(20 * time.Millisecond)
+			waitErr := tree.Wait(context.Background(), cmd.WaitDelay)
+			if cleanupErr := errors.Join(err, waitErr); cleanupErr != nil {
+				escalation <- fmt.Errorf("%w: %v", ErrProcessesAlive, cleanupErr)
 			}
 		}()
 		return err

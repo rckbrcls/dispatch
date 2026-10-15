@@ -2,14 +2,17 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"dispatch/internal/process"
 	"dispatch/internal/store"
 	"dispatch/internal/worktree"
 )
@@ -142,6 +145,7 @@ func TestRecoverAndClean(t *testing.T) {
 }
 
 func TestCancelWaitsForProcesses(t *testing.T) {
+	requireProcessTree(t)
 	var ran []string
 	d := deps(t, &ran)
 	owner := exec.Command("sleep", "60")
@@ -170,6 +174,7 @@ func TestCancelWaitsForProcesses(t *testing.T) {
 }
 
 func TestReconcileStopsOrphanGroup(t *testing.T) {
+	requireProcessTree(t)
 	var ran []string
 	d := deps(t, &ran)
 	cmd := exec.Command("sleep", "60")
@@ -213,5 +218,98 @@ func TestWaitTimeoutPreservesRecord(t *testing.T) {
 	got, err := d.Wait(ctx, rec.ID, time.Millisecond)
 	if err != context.Canceled || got.ID != rec.ID {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestDetachedDescendantsStopped(t *testing.T) {
+	requireProcessTree(t)
+	perl, err := exec.LookPath("perl")
+	if err != nil {
+		t.Skip("perl unavailable for detached process fixture")
+	}
+	for _, orphan := range []bool{false, true} {
+		name := "cancel"
+		if orphan {
+			name = "reconcile"
+		}
+		t.Run(name, func(t *testing.T) {
+			var ran []string
+			d := deps(t, &ran)
+			path := filepath.Join(t.TempDir(), "child")
+			program := `use POSIX qw(setsid); setsid() >= 0 or die $!; $SIG{TERM}="IGNORE"; open(my $f,">",$ARGV[0]) or die $!; print $f "$$\n"; close($f); exec "sleep","60";`
+			agent := exec.Command("sh", "-c", `"$1" -e "$2" "$3" & trap 'exit' TERM; wait`, "sh", perl, program, path)
+			agent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := agent.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
+			done := make(chan error, 1)
+			go func() { done <- agent.Wait() }()
+			var child int
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				b, _ := os.ReadFile(path)
+				child, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+				if child > 0 {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if child <= 0 {
+				t.Fatal("detached process did not start")
+			}
+			defer syscall.Kill(child, syscall.SIGKILL)
+			group, err := syscall.Getpgid(child)
+			if err != nil || group == agent.Process.Pid {
+				t.Fatalf("process did not detach: %d %v", group, err)
+			}
+			ownerPID := 99999999
+			if !orphan {
+				owner := exec.Command("sleep", "60")
+				if err := owner.Start(); err != nil {
+					t.Fatal(err)
+				}
+				defer owner.Process.Kill()
+				go owner.Wait()
+				ownerPID = owner.Process.Pid
+			}
+			rec := store.Record{ID: name, Status: store.Running, PID: ownerPID, AgentPID: agent.Process.Pid, ProcStart: processStart(context.Background(), ownerPID)}
+			if err := d.Store.Append(rec); err != nil {
+				t.Fatal(err)
+			}
+			want := store.Cancelled
+			if orphan {
+				if err := d.Reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				want = store.Orphaned
+			} else {
+				if _, err := d.Cancel(context.Background(), rec.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := d.Store.Get(rec.ID)
+			if err != nil || got.Status != want {
+				t.Fatalf("%+v %v", got, err)
+			}
+			if err := syscall.Kill(child, 0); err != syscall.ESRCH {
+				t.Fatalf("escaped descendant %d survived: %v", child, err)
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("agent survived")
+			}
+		})
+	}
+}
+
+func requireProcessTree(t *testing.T) {
+	t.Helper()
+	if _, err := process.Capture(os.Getpid()); err != nil {
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Skipf("sandbox blocks process table: %v", err)
+		}
+		t.Fatal(err)
 	}
 }
