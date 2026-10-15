@@ -29,7 +29,7 @@ func Targets(home string) map[string]Target {
 		"cursor":      {Dir: filepath.Join(home, ".cursor", "skills")},
 		"codex":       shared,
 		"grok":        shared,
-		"antigravity": {Dir: filepath.Join(home, ".gemini", "antigravity", "skills")},
+		"antigravity": {Dir: filepath.Join(home, ".gemini", "config", "skills")},
 	}
 }
 

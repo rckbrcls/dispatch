@@ -117,8 +117,12 @@ Comandos: `agents`, `tiers [--init|--check]`, `run` (`--tier`, `--dir`, `--reado
 - Modelos Claude são filtrados/recusados nos CLIs de terceiros.
 - Estado em `~/.dispatch` (`DISPATCH_HOME`): `runs.jsonl`, `tiers.json`, `snapshots.jsonl`, `cooldowns.json`, `logs/`.
 
+### Verificado em 2026-10-15
+- Skill: Codex e Grok leem `~/.agents/skills`; Antigravity lê `~/.gemini/config/skills` (confirmado nas strings do `agy`); `skill install` rodado na home real.
+- Nome `dispatch`: livre no Homebrew; npm tem um pacote homônimo sem relação (connect dispatcher); no GitHub há `khlieng/dispatch` (cliente IRC, 641 estrelas), que também instala um binário `dispatch`. Conflito de PATH só se alguém tiver os dois.
+- Quota Cursor/Grok: `cursor-agent about/status` e `grok usage <session>` não expõem quota do plano (só auth e tokens por sessão). Segue cooldown por rate limit.
+
 ### Ainda aberto
-- Quota de Cursor e Grok só se a fonte oficial aparecer (acompanhar `grok agent stdio` e `cursor-agent`).
-- Caminhos de skill do Codex e do Antigravity ainda não confirmados contra a doc de cada um.
-- Colisão do nome `dispatch` em GitHub/npm/Homebrew e ToS dos provedores não checados.
+- Quota de Cursor e Grok só se a fonte oficial aparecer.
+- ToS dos provedores: o dispatch só invoca os CLIs oficiais de forma não interativa e não lê credenciais, mas a leitura dos termos de cada provedor é decisão do dono.
 - Pace histórico só vale para janelas semanais.
