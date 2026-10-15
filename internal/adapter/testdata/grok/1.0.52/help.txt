@@ -1,0 +1,10 @@
+grok
+
+Flags:
+  --output-format plain
+  --permission-mode plan
+  --resume
+  -s
+  --model
+  --cwd
+  -p

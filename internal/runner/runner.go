@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -87,14 +88,20 @@ func (d Deps) adapter(name string) adapter.Adapter {
 // Candidates resolves the tier table against installed adapters, attaches
 // quota, pace, history and cooldowns, and ranks them. Table order is kept
 // among equals.
-func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bool, prefer, avoid []string) []router.Candidate {
+func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bool, prefer, avoid []string) ([]router.Candidate, []string) {
 	var cs []router.Candidate
+	var rejected []string
 	for _, e := range d.Table.Tiers[tier] {
 		a := d.adapter(e.Agent)
 		if a == nil || !d.installed(a.Binary()) {
 			continue
 		}
 		if needReadOnly && !a.Capabilities().ReadOnly {
+			rejected = append(rejected, a.Name()+" does not support readOnly")
+			continue
+		}
+		if !needReadOnly && !a.Capabilities().FileEditing {
+			rejected = append(rejected, a.Name()+" does not support fileEditing")
 			continue
 		}
 		c := router.Candidate{Adapter: a, Model: e.Model}
@@ -174,7 +181,48 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 			}
 		}
 	}
-	return router.Rank(cs)
+	return router.Rank(cs), rejected
+}
+
+// block probes the CLI when it can. DEGRADED still runs and returns a note
+// via the record. A missing flag for a capability this run requires is refused.
+func (d Deps) block(ctx context.Context, rec *store.Record, c router.Candidate, resume bool) string {
+	p, ok := c.Adapter.(adapter.Prober)
+	if !ok {
+		return ""
+	}
+	report := p.Probe(ctx)
+	if report.Status != adapter.StatusDegraded {
+		return ""
+	}
+	if rec.ReadOnly {
+		if miss := missingFlags(report, "readOnly"); len(miss) > 0 {
+			return fmt.Sprintf("%s does not support readOnly (missing %s)", c.Adapter.Name(), strings.Join(miss, ", "))
+		}
+	} else if miss := missingFlags(report, "fileEditing"); len(miss) > 0 {
+		return fmt.Sprintf("%s does not support fileEditing (missing %s)", c.Adapter.Name(), strings.Join(miss, ", "))
+	}
+	if resume {
+		if miss := missingFlags(report, "sessionResume"); len(miss) > 0 {
+			return fmt.Sprintf("%s does not support session resume (missing %s)", c.Adapter.Name(), strings.Join(miss, ", "))
+		}
+	}
+	detail := strings.Join(report.Notes, "; ")
+	if detail == "" {
+		detail = "capability flags missing"
+	}
+	rec.Note = joinNote(rec.Note, c.Adapter.Name()+" probe DEGRADED: "+detail)
+	return ""
+}
+
+func missingFlags(r adapter.ProbeReport, capability string) []string {
+	var out []string
+	for _, f := range r.Flags {
+		if !f.Present && f.Capability == capability {
+			out = append(out, f.Name)
+		}
+	}
+	return out
 }
 
 // Begin validates the request and persists a PENDING record.
@@ -281,6 +329,9 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if a == nil || !d.installed(a.Binary()) {
 			return finish(store.Failed, "agent "+rec.Agent+" is not available to resume")
 		}
+		if !a.Capabilities().SessionResume {
+			return finish(store.Failed, a.Name()+" does not support session resume")
+		}
 		cands = []router.Candidate{{Adapter: a, Model: rec.Model}}
 		resumeSession = rec.SessionID
 		if rec.Worktree != "" {
@@ -293,8 +344,12 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 			}
 		}
 	} else {
-		cands = d.Candidates(ctx, adapter.Tier(rec.Tier), rec.ReadOnly, rec.Prefer, rec.Avoid)
+		var rejected []string
+		cands, rejected = d.Candidates(ctx, adapter.Tier(rec.Tier), rec.ReadOnly, rec.Prefer, rec.Avoid)
 		if len(cands) == 0 {
+			if len(rejected) > 0 {
+				return finish(store.Failed, strings.Join(rejected, "; "))
+			}
 			return finish(store.Failed, "no installed agent serves tier "+rec.Tier)
 		}
 		if !rec.ReadOnly && !rec.NoWorktree {
@@ -322,7 +377,12 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		}
 	}
 
+	var skipped []string
 	for _, c := range cands {
+		if msg := d.block(ctx, &rec, c, resumeSession != ""); msg != "" {
+			skipped = append(skipped, msg)
+			continue
+		}
 		if agentStart.IsZero() {
 			agentStart = d.Now()
 		}
@@ -334,14 +394,25 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if err := d.Store.Append(rec); err != nil {
 			return rec, err
 		}
-		res, err := c.Adapter.Run(ctx, adapter.Request{
+		req := adapter.Request{
 			Prompt: rec.Prompt, Tier: adapter.Tier(rec.Tier), Dir: dir, ReadOnly: rec.ReadOnly,
 			Started: func(pid int) error {
 				rec.AgentPID = pid
 				return d.Store.Append(rec)
 			},
 			Timeout: timeout, ResumeSession: resumeSession, Env: childEnv,
-		}, c.Model)
+		}
+		var res adapter.Result
+		var err error
+		if resumeSession != "" {
+			if r, ok := c.Adapter.(adapter.Resumer); ok {
+				res, err = r.Resume(ctx, req, c.Model)
+			} else {
+				res, err = c.Adapter.Run(ctx, req, c.Model)
+			}
+		} else {
+			res, err = c.Adapter.Run(ctx, req, c.Model)
+		}
 		rec.ExitCode, rec.SessionID = res.ExitCode, res.SessionID
 		switch {
 		case errors.Is(err, adapter.ErrProcessesAlive):
@@ -383,6 +454,13 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 			DurationMs: store.I64(nonNegMs(d.Now().Sub(attemptStart))),
 			ExitClass:  classOf(err.Error()),
 		})
+	}
+	if len(rec.Attempts) == 0 {
+		msg := strings.Join(skipped, "; ")
+		if msg == "" {
+			msg = "no candidate could run"
+		}
+		return finish(store.Failed, msg)
 	}
 	last := rec.Attempts[len(rec.Attempts)-1]
 	return finish(store.Failed, fmt.Sprintf("all %d candidates failed; last: %s/%s: %s", len(rec.Attempts), last.Agent, last.Model, last.Error))

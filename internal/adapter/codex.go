@@ -21,7 +21,31 @@ type Codex struct{}
 func (Codex) Name() string   { return "codex" }
 func (Codex) Binary() string { return "codex" }
 func (Codex) Capabilities() Capabilities {
-	return Capabilities{SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true}
+	return Capabilities{SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true, Usage: true}
+}
+func (Codex) UsageSource() string { return SourceCodexAppServer }
+
+func (Codex) Probe(ctx context.Context) ProbeReport {
+	return probeBinary(ctx, "codex", "codex", Codex{}.Capabilities(), codexProbeFlags)
+}
+
+func (Codex) Resume(ctx context.Context, req Request, model string) (Result, error) {
+	if req.ResumeSession == "" {
+		return Result{}, fmt.Errorf("codex: resume requires a session")
+	}
+	return Codex{}.Run(ctx, req, model)
+}
+
+// Flags codex exec puts on the command line. -c carries the read-only sandbox.
+var codexProbeFlags = []probeFlag{
+	{Name: "exec"},
+	{Name: "resume", Capability: "sessionResume", Sub: "exec"},
+	{Name: "app-server", Capability: "usage"},
+	{Name: "--json", Capability: "structuredOutput", Sub: "exec"},
+	{Name: "--skip-git-repo-check", Sub: "exec"},
+	{Name: "-o", Sub: "exec"},
+	{Name: "-m", Sub: "exec"},
+	{Name: "-c", Capability: "readOnly", Sub: "exec"},
 }
 
 type rpcMsg struct {
@@ -86,11 +110,10 @@ type codexWindow struct {
 	ResetsAt           *int64  `json:"resetsAt"`
 }
 
-// Quota prefers the secondary (weekly) window and falls back to primary.
-func (Codex) Quota(ctx context.Context) (Quota, error) {
+func readCodexLimits(ctx context.Context) (primary, secondary *codexWindow, err error) {
 	raw, err := appServerCall(ctx, "account/rateLimits/read", nil)
 	if err != nil {
-		return Quota{}, fmt.Errorf("%w: %v", ErrNoQuota, err)
+		return nil, nil, err
 	}
 	var res struct {
 		RateLimits struct {
@@ -99,11 +122,25 @@ func (Codex) Quota(ctx context.Context) (Quota, error) {
 		} `json:"rateLimits"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, nil, err
+	}
+	return res.RateLimits.Primary, res.RateLimits.Secondary, nil
+}
+
+// Quota prefers the secondary (weekly) window and falls back to primary.
+// An incomplete secondary window is an error, not a silent fallback.
+func (Codex) Quota(ctx context.Context) (Quota, error) {
+	p, s, err := readCodexLimits(ctx)
+	if err != nil {
 		return Quota{}, fmt.Errorf("%w: %v", ErrNoQuota, err)
 	}
-	w := res.RateLimits.Secondary
+	return codexQuota(p, s)
+}
+
+func codexQuota(primary, secondary *codexWindow) (Quota, error) {
+	w := secondary
 	if w == nil {
-		w = res.RateLimits.Primary
+		w = primary
 	}
 	if w == nil || w.WindowDurationMins == nil || w.ResetsAt == nil {
 		return Quota{}, ErrNoQuota
@@ -114,6 +151,44 @@ func (Codex) Quota(ctx context.Context) (Quota, error) {
 		WindowMinutes: *w.WindowDurationMins,
 		ResetsAt:      time.Unix(*w.ResetsAt, 0),
 	}, nil
+}
+
+// Usage returns every complete official window. It does not invent a percent.
+func (Codex) Usage(ctx context.Context) ([]QuotaSample, error) {
+	p, s, err := readCodexLimits(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNoQuota, err)
+	}
+	return codexSamples(p, s)
+}
+
+func codexSamples(primary, secondary *codexWindow) ([]QuotaSample, error) {
+	var out []QuotaSample
+	if q, ok := codexSample("primary", primary); ok {
+		out = append(out, q)
+	}
+	if q, ok := codexSample("secondary", secondary); ok {
+		out = append(out, q)
+	}
+	if len(out) == 0 {
+		return nil, ErrNoQuota
+	}
+	return out, nil
+}
+
+func codexSample(window string, w *codexWindow) (QuotaSample, bool) {
+	if w == nil || w.WindowDurationMins == nil || w.ResetsAt == nil {
+		return QuotaSample{}, false
+	}
+	used := w.UsedPercent
+	return QuotaSample{
+		Window:     window,
+		Used:       &used,
+		ResetAt:    time.Unix(*w.ResetsAt, 0).UTC(),
+		Duration:   Span(time.Duration(*w.WindowDurationMins) * time.Minute),
+		Source:     SourceCodexAppServer,
+		Confidence: ConfidenceOfficial,
+	}, true
 }
 
 func (Codex) Models(ctx context.Context) ([]Model, error) {

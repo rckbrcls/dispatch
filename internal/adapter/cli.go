@@ -20,6 +20,7 @@ import (
 type cliAdapter struct {
 	name, binary string
 	caps         Capabilities
+	flags        []probeFlag
 	listArgs     []string
 	parseModels  func(out string) []string
 	// newSession allocates a session id before a fresh run (optional).
@@ -35,6 +36,17 @@ type cliAdapter struct {
 func (c cliAdapter) Name() string               { return c.name }
 func (c cliAdapter) Binary() string             { return c.binary }
 func (c cliAdapter) Capabilities() Capabilities { return c.caps }
+
+func (c cliAdapter) Probe(ctx context.Context) ProbeReport {
+	return probeBinary(ctx, c.name, c.binary, c.caps, c.flags)
+}
+
+func (c cliAdapter) Resume(ctx context.Context, req Request, model string) (Result, error) {
+	if req.ResumeSession == "" {
+		return Result{}, fmt.Errorf("%s: resume requires a session", c.name)
+	}
+	return c.Run(ctx, req, model)
+}
 
 func (c cliAdapter) Quota(context.Context) (Quota, error) { return Quota{}, ErrNoQuota }
 
