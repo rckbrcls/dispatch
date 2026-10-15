@@ -3,6 +3,8 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -10,15 +12,19 @@ import (
 )
 
 // cliAdapter is a one-shot print-mode CLI: run a prompt, read stdout.
-// Quota has no readable source for these CLIs; the router treats them as
-// unknown and reacts to rate-limit errors instead.
+// Quota has no readable source for these CLIs unless a subtype adds one;
+// the router then treats them as unknown and learns from rate-limit errors.
 type cliAdapter struct {
 	name, binary string
 	caps         Capabilities
 	listArgs     []string
 	parseModels  func(out string) []string
-	// args builds the full argument list for a run.
-	args func(req Request, model string) []string
+	// newSession allocates a session id before a fresh run (optional).
+	newSession func(ctx context.Context) (string, error)
+	// args builds the argument list. session is the id to use or resume.
+	args func(req Request, model, session string, resume bool) []string
+	// parse extracts output and session id from stdout (optional).
+	parse func(stdout string) (output, session string)
 	// setDir is true when the CLI has no cwd flag and must run with cmd.Dir.
 	setDir bool
 }
@@ -56,7 +62,14 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, c.binary, c.args(req, model)...)
+	session, resume := req.ResumeSession, req.ResumeSession != ""
+	if !resume && c.newSession != nil {
+		var err error
+		if session, err = c.newSession(ctx); err != nil {
+			return Result{}, fmt.Errorf("%s: new session: %w", c.name, err)
+		}
+	}
+	cmd := exec.CommandContext(ctx, c.binary, c.args(req, model, session, resume)...)
 	ownGroup(cmd)
 	if c.setDir {
 		cmd.Dir = req.Dir
@@ -65,7 +78,16 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
 
-	res := Result{Output: strings.TrimSpace(stdout.String()), ExitCode: cmd.ProcessState.ExitCode()}
+	res := Result{ExitCode: cmd.ProcessState.ExitCode(), SessionID: session}
+	if c.parse != nil {
+		var parsed string
+		res.Output, parsed = c.parse(stdout.String())
+		if parsed != "" {
+			res.SessionID = parsed
+		}
+	} else {
+		res.Output = strings.TrimSpace(stdout.String())
+	}
 	switch {
 	case ctx.Err() != nil:
 		return res, ctx.Err()
@@ -76,6 +98,26 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 		return res, fmt.Errorf("%s: permission denied in headless mode: %s", c.name, bytes.TrimSpace(stderr.Bytes()))
 	}
 	return res, nil
+}
+
+func newUUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// parseAgyJSON reads agy's --output-format json envelope.
+func parseAgyJSON(stdout string) (string, string) {
+	var env struct {
+		ConversationID string `json:"conversation_id"`
+		Response       string `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		return strings.TrimSpace(stdout), ""
+	}
+	return strings.TrimSpace(env.Response), env.ConversationID
 }
 
 // --- model list parsers ---

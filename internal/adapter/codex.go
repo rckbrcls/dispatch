@@ -105,6 +105,7 @@ func (Codex) Quota(ctx context.Context) (Quota, error) {
 		return Quota{}, ErrNoQuota
 	}
 	return Quota{
+		Key:           "codex",
 		UsedPercent:   w.UsedPercent,
 		WindowMinutes: *w.WindowDurationMins,
 		ResetsAt:      time.Unix(*w.ResetsAt, 0),
@@ -137,7 +138,8 @@ func (Codex) Models(ctx context.Context) ([]Model, error) {
 	return out, nil
 }
 
-// Run executes `codex exec`, returning the agent's last message.
+// Run executes `codex exec` (or `codex exec resume`), returning the agent's
+// last message. The session id comes from the --json thread.started event.
 func (Codex) Run(ctx context.Context, req Request, model string) (Result, error) {
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -155,22 +157,33 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	if req.ReadOnly {
 		sandbox = "read-only"
 	}
-	args := []string{"exec", "-s", sandbox, "--skip-git-repo-check", "-o", out.Name()}
+	// `exec resume` has no -s/-C flags, so sandbox goes through config and
+	// the working directory through the process.
+	args := []string{"exec"}
+	if req.ResumeSession != "" {
+		args = append(args, "resume")
+	}
+	args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", sandbox),
+		"--json", "--skip-git-repo-check", "-o", out.Name())
 	if model != "" {
 		args = append(args, "-m", model)
 	}
-	if req.Dir != "" {
-		args = append(args, "-C", req.Dir)
+	if req.ResumeSession != "" {
+		args = append(args, req.ResumeSession)
 	}
 	args = append(args, "-") // prompt from stdin
 	cmd := exec.CommandContext(ctx, "codex", args...)
 	ownGroup(cmd)
+	cmd.Dir = req.Dir
 	cmd.Stdin = bytes.NewBufferString(req.Prompt)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
 
-	res := Result{ExitCode: cmd.ProcessState.ExitCode()}
+	res := Result{ExitCode: cmd.ProcessState.ExitCode(), SessionID: req.ResumeSession}
+	if id := codexThreadID(stdout.Bytes()); id != "" {
+		res.SessionID = id
+	}
 	if b, err := os.ReadFile(out.Name()); err == nil {
 		res.Output = string(b)
 	}
@@ -181,4 +194,18 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 		return res, fmt.Errorf("codex exec: %v: %s", runErr, bytes.TrimSpace(stderr.Bytes()))
 	}
 	return res, nil
+}
+
+// codexThreadID finds the thread id in `codex exec --json` JSONL output.
+func codexThreadID(stdout []byte) string {
+	for _, line := range bytes.Split(stdout, []byte("\n")) {
+		var ev struct {
+			Type     string `json:"type"`
+			ThreadID string `json:"thread_id"`
+		}
+		if json.Unmarshal(line, &ev) == nil && ev.Type == "thread.started" {
+			return ev.ThreadID
+		}
+	}
+	return ""
 }

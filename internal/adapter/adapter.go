@@ -31,6 +31,8 @@ type Capabilities struct {
 
 // Quota is a normalized usage window reported by a collector.
 type Quota struct {
+	// Key identifies the quota pool (e.g. "codex", "antigravity:Gemini Models").
+	Key           string        `json:"key,omitempty"`
 	UsedPercent   float64       `json:"usedPercent"`
 	WindowMinutes int           `json:"windowMinutes"`
 	ResetsAt      time.Time     `json:"resetsAt"`
@@ -44,12 +46,23 @@ type Request struct {
 	Dir      string
 	ReadOnly bool
 	Timeout  time.Duration
+	// ResumeSession continues a previous session of the same adapter.
+	ResumeSession string
 }
 
 // Result is the raw outcome of a run, before compaction.
 type Result struct {
 	Output   string
 	ExitCode int
+	// SessionID identifies the agent session so it can be resumed later.
+	SessionID string
+}
+
+// ModelQuoter is implemented by adapters whose quota differs per model
+// (e.g. Antigravity's Gemini vs third-party groups). It returns a quota for
+// each requested model it can resolve.
+type ModelQuoter interface {
+	ModelQuotas(ctx context.Context, models []string) (map[string]Quota, error)
 }
 
 // Adapter wraps one agent CLI.

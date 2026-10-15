@@ -15,6 +15,9 @@ type Candidate struct {
 	Model   string
 	Quota   *adapter.Quota // nil when unknown
 	Pace    *pace.Pace
+	Hist    *pace.History // nil unless >=5 complete weeks are on record
+	// CooledDown marks an agent that recently hit a rate limit.
+	CooledDown bool
 }
 
 // Rank orders candidates: known reserve first (most reserve on top), then
@@ -26,16 +29,24 @@ func Rank(cs []Candidate) []Candidate {
 }
 
 func score(c Candidate) float64 {
-	if c.Pace == nil {
-		return 1000 // unknown: after reserve, before deficit
+	var base float64
+	switch {
+	case c.Pace == nil:
+		base = 1000 // unknown: after reserve, before deficit
+	case !c.Pace.WillLast:
+		base = 3000 + c.Pace.Delta
+	case c.Pace.Deficit:
+		base = 2000 + c.Pace.Delta
+	default:
+		base = c.Pace.Delta // negative = reserve, more negative first
 	}
-	if !c.Pace.WillLast {
-		return 3000 + c.Pace.Delta
+	if c.Hist != nil && c.Hist.Valid {
+		base += c.Hist.Risk * 40 // history: how often this pace ran dry
 	}
-	if c.Pace.Deficit {
-		return 2000 + c.Pace.Delta
+	if c.CooledDown {
+		base += 10000
 	}
-	return c.Pace.Delta // negative = reserve, more negative first
+	return base
 }
 
 // Evaluate fills Pace from Quota at the given time.

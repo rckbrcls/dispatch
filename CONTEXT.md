@@ -1,7 +1,7 @@
 # dispatch — contexto da conversa de origem
 
 Transcrição condensada da conversa que originou o projeto (iniciada no repo Polterware/Lore, 2026-10-14).
-Nada aqui foi implementado ainda. Itens marcados *(inferido)* ou *(não verificado)* não foram confirmados em fonte.
+A seção "Estado atual" no fim descreve o que já está implementado. Itens marcados *(inferido)* ou *(não verificado)* não foram confirmados em fonte.
 
 ## O que é
 
@@ -16,7 +16,7 @@ Não é outro agente de código. É infraestrutura entre agentes e os CLIs exist
 | Nome | `dispatch` |
 | Linguagem | Go, binário único (Rust como alternativa; C e TypeScript descartados) |
 | Local | Repo separado do Lore/Polterware (execução de agentes está fora do escopo do Lore) |
-| Interface | CLI como núcleo; MCP fino por cima (1–2 tools: `delegate`, `result`) |
+| Interface | **Somente CLI.** MCP descartado: custo fixo de contexto e runs longos brigam com timeouts; os clientes têm shell. Descoberta via `dispatch skill install` |
 | Persistência | Arquivo JSONL simples; SQLite só se necessário |
 | LLM extra | Nenhuma chamada de LLM para resumir no início |
 | Relação com o Lore | Opcional: registrar delegações como AgentRun/Activity via MCP do Lore |
@@ -100,12 +100,25 @@ se eta >= (resetsAt - agora): dura até o reset; senão: "acaba em eta"
 - Colisão do nome `dispatch` em GitHub/npm/Homebrew não foi checada.
 - Flags não interativas de cada CLI (resume, read-only, JSON streaming) precisam ser confirmadas na documentação oficial antes de escrever adapters.
 
-## Próximos passos sugeridos
+## Estado atual (implementado)
 
-1. Verificar nome e ToS.
-2. Ler `clink` do PAL MCP e decidir se vale construir ou consumir o que existe.
-3. `go mod init`, interface `Adapter` + `Capabilities`.
-4. Primeiro coletor: Codex via `app-server` (`account/rateLimits/read`).
-5. Motor de pace linear, depois snapshots JSONL.
-6. `dispatch agents`, `dispatch run --tier`, `dispatch result`.
-7. MCP stdio fino.
+Comandos: `agents`, `tiers [--init|--check]`, `run` (`--tier`, `--dir`, `--readonly`, `--timeout`, `--background`, `--resume`, `--no-worktree`), `wait`, `list`, `cancel`, `result`, `merge`, `clean`, `skill install|show`.
+
+| Agente | Run | Quota | Resume |
+|---|---|---|---|
+| Codex | `codex exec` (`--json` p/ thread id) | `app-server` `account/rateLimits/read` | `codex exec resume <id>` |
+| Antigravity | `agy -p --output-format json` | `agy -p /usage --output-format json` (grupos Gemini / Claude+GPT; semanal, ou 5h se ≥90%) | `--conversation <id>` |
+| Cursor | `cursor-agent -p` | **indisponível**: só via cookies do navegador (extração de credencial, recusado) | `create-chat` + `--resume` |
+| Grok | `grok -p` | **indisponível**: `x.ai/billing` no `agent stdio` responde -32601 (1.0.52); o resto exige token/cookie | `-s <uuid>` + `--resume` |
+
+- Sem fonte de quota, o roteador aprende com erros de rate limit: o agente entra em cooldown de 1h e vai para o fim do ranking.
+- Snapshots de quota em `~/.dispatch/snapshots.jsonl` (a cada 30 min ou ≥1 pt, retenção 56 dias) alimentam o pace histórico (risco ponderado, ≥5 semanas completas), que penaliza o ranking.
+- Runs de escrita em repo git rodam num worktree `<repo>/.dispatch/worktrees/<id>` (branch `dispatch/<id>`), commitados ao fim; `merge` integra e limpa. `.dispatch/` entra em `.git/info/exclude`.
+- Modelos Claude são filtrados/recusados nos CLIs de terceiros.
+- Estado em `~/.dispatch` (`DISPATCH_HOME`): `runs.jsonl`, `tiers.json`, `snapshots.jsonl`, `cooldowns.json`, `logs/`.
+
+### Ainda aberto
+- Quota de Cursor e Grok só se a fonte oficial aparecer (acompanhar `grok agent stdio` e `cursor-agent`).
+- Caminhos de skill do Codex e do Antigravity ainda não confirmados contra a doc de cada um.
+- Colisão do nome `dispatch` em GitHub/npm/Homebrew e ToS dos provedores não checados.
+- Pace histórico só vale para janelas semanais.

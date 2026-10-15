@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -43,6 +44,15 @@ type Record struct {
 	Error      string    `json:"error,omitempty"`
 	ExitCode   int       `json:"exitCode"`
 	Attempts   []Attempt `json:"attempts,omitempty"`
+	TimeoutSec int       `json:"timeoutSec,omitempty"`
+	NoWorktree bool      `json:"noWorktree,omitempty"`
+	PID        int       `json:"pid,omitempty"`
+	SessionID  string    `json:"sessionId,omitempty"`
+	ResumedOf  string    `json:"resumedOf,omitempty"`
+	Repo       string    `json:"repo,omitempty"`     // repo root when a worktree was made
+	Worktree   string    `json:"worktree,omitempty"` // path the agent ran in
+	Branch     string    `json:"branch,omitempty"`
+	Note       string    `json:"note,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 	FinishedAt time.Time `json:"finishedAt,omitzero"`
 }
@@ -97,6 +107,20 @@ func (s Store) Get(id string) (Record, error) {
 		return Record{}, ErrNotFound
 	}
 	return *found, nil
+}
+
+// List returns the latest record of every run, newest first.
+func (s Store) List() ([]Record, error) {
+	all, err := s.latest()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Record, 0, len(all))
+	for _, r := range all {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
 }
 
 func (s Store) latest() (map[string]Record, error) {
