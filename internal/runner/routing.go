@@ -26,22 +26,44 @@ func validateOptions(o Options) error {
 	if o.Filters.Effort != "" && adapter.EffortOf(o.Filters.Model) != "" && adapter.EffortOf(o.Filters.Model) != o.Filters.Effort {
 		return fmt.Errorf("model suffix conflicts with requested effort")
 	}
+	if o.Filters.Priority != "" && !router.ValidPriority(o.Filters.Priority) {
+		return fmt.Errorf("invalid priority %q (want speed|balanced|quality)", o.Filters.Priority)
+	}
 	return nil
+}
+
+func normalizePriority(o *Options) error {
+	if o.Filters.Priority == "" {
+		o.Filters.Priority = router.PriorityBalanced
+		return nil
+	}
+	if !router.ValidPriority(o.Filters.Priority) {
+		return fmt.Errorf("invalid priority %q (want speed|balanced|quality)", o.Filters.Priority)
+	}
+	return nil
+}
+
+// tiered keeps the source tier so measured evidence is not pooled across difficulties.
+type tiered struct {
+	tiers.Entry
+	tier adapter.Tier
 }
 
 // selectCandidates applies hard constraints before quota/model ranking. In
 // particular a fixed model never competes with a different model in Rank.
+// Priority is copied onto candidates and never rejects one.
 func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 	f := o.Filters
-	var entries []tiers.Entry
+	var entries []tiered
 	var rejected []string
-	all := []tiers.Entry{}
+	var all []tiered
 	for _, t := range []adapter.Tier{adapter.TierEasy, adapter.TierNormal, adapter.TierHard} {
-		all = append(all, d.Table.Tiers[t]...)
-		if o.Tier == "" || o.Tier == t {
-			entries = append(entries, d.Table.Tiers[t]...)
-		} else {
-			for _, e := range d.Table.Tiers[t] {
+		for _, e := range d.Table.Tiers[t] {
+			te := tiered{Entry: e, tier: t}
+			all = append(all, te)
+			if o.Tier == "" || o.Tier == t {
+				entries = append(entries, te)
+			} else {
 				rejected = append(rejected, e.Agent+"/"+e.Model+": tier filter requires "+string(o.Tier))
 			}
 		}
@@ -57,21 +79,24 @@ func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 		// An unlisted model can use an explicitly named agent, or agents with
 		// a declared model of the same provider. Never guess cross-provider access.
 		entries = nil
+		add := func(e tiers.Entry) {
+			entries = append(entries, tiered{Entry: e, tier: o.Tier})
+		}
 		for _, a := range d.Adapters {
 			desiredProvider := adapter.ProviderOf("", f.Model)
 			if desiredProvider == "" {
 				desiredProvider = f.Provider
 			}
 			if desiredProvider == "" {
-				entries = append(entries, tiers.Entry{Agent: a.Name(), Model: f.Model})
+				add(tiers.Entry{Agent: a.Name(), Model: f.Model})
 				continue
 			}
 			if f.Agent != "" && a.Name() == f.Agent {
-				entries = append(entries, tiers.Entry{Agent: a.Name(), Model: f.Model})
+				add(tiers.Entry{Agent: a.Name(), Model: f.Model})
 				continue
 			}
 			if adapter.ProviderOf(a.Name(), "") == desiredProvider {
-				entries = append(entries, tiers.Entry{Agent: a.Name(), Model: f.Model, Provider: desiredProvider})
+				add(tiers.Entry{Agent: a.Name(), Model: f.Model, Provider: desiredProvider})
 				continue
 			}
 			for _, e := range all {
@@ -80,7 +105,7 @@ func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 					provider = adapter.ProviderOf(e.Agent, e.Model)
 				}
 				if e.Agent == a.Name() && provider == desiredProvider && provider != "" {
-					entries = append(entries, tiers.Entry{Agent: a.Name(), Model: f.Model, Provider: provider})
+					add(tiers.Entry{Agent: a.Name(), Model: f.Model, Provider: provider})
 					break
 				}
 			}
@@ -186,7 +211,10 @@ func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 			continue
 		}
 		seen[key] = true
-		c := router.Candidate{Adapter: a, Model: model, Provider: provider, Effort: effort}
+		c := router.Candidate{
+			Adapter: a, Model: model, Provider: provider, Effort: effort,
+			Priority: f.Priority, Tier: string(e.tier), Speed: e.Speed, Strength: e.Strength,
+		}
 		if outside {
 			c.Note = "explicit model outside tier table"
 		}
@@ -216,31 +244,39 @@ func matchesModel(model, requested string) bool {
 
 type RouteCandidate struct {
 	store.Filters
-	Score  float64 `json:"score"`
-	Reason string  `json:"reason"`
+	Score  float64       `json:"score"`
+	Reason string        `json:"reason"`
+	Terms  []router.Term `json:"terms,omitempty"`
 }
 
 // RouteReport contains only structured routing decisions, never agent output.
 type RouteReport struct {
-	Requested  store.Filters    `json:"requested"`
-	Candidates []RouteCandidate `json:"candidates"`
-	Eliminated []string         `json:"eliminated"`
-	Winner     *store.Filters   `json:"winner,omitempty"`
-	Reason     string           `json:"reason"`
-	Note       string           `json:"note,omitempty"`
+	Requested      store.Filters    `json:"requested"`
+	Priority       string           `json:"priority,omitempty"`
+	Candidates     []RouteCandidate `json:"candidates"`
+	Eliminated     []string         `json:"eliminated"`
+	Winner         *store.Filters   `json:"winner,omitempty"`
+	BalancedWinner *store.Filters   `json:"balancedWinner,omitempty"`
+	Reason         string           `json:"reason"`
+	PriorityNote   string           `json:"priorityNote,omitempty"`
+	Note           string           `json:"note,omitempty"`
 }
 
 // Route reads cached quota and cooldown state. It never invokes a CLI,
 // records a snapshot/run, reconciles processes, or creates a worktree.
 func (d Deps) Route(ctx context.Context, o Options) (RouteReport, error) {
-	r := RouteReport{Requested: o.Filters, Candidates: []RouteCandidate{}}
+	if err := normalizePriority(&o); err != nil {
+		return RouteReport{}, err
+	}
+	r := RouteReport{Requested: o.Filters, Priority: o.Filters.Priority, Candidates: []RouteCandidate{}}
 	if err := validateOptions(o); err != nil {
 		return r, err
 	}
 	cs, rejected := d.selectCandidates(o)
 	r.Eliminated = rejected
 	if len(cs) == 0 && o.Filters.Relax {
-		o.Filters = store.Filters{}
+		priority := o.Filters.Priority
+		o.Filters = store.Filters{Priority: priority}
 		if o.Tier == "" {
 			o.Tier = adapter.TierNormal
 		}
@@ -248,8 +284,13 @@ func (d Deps) Route(ctx context.Context, o Options) (RouteReport, error) {
 		r.Eliminated = append(r.Eliminated, rejected...)
 		r.Note = "--relax: filters relaxed to tier routing"
 	}
-	for _, c := range d.evaluate(ctx, cs, false) {
-		r.Candidates = append(r.Candidates, RouteCandidate{Filters: store.Filters{Provider: c.Provider, Model: c.Model, Effort: c.Effort, Agent: c.Adapter.Name()}, Score: router.Score(c), Reason: router.Reason(c)})
+	observed := d.observe(ctx, cs, false)
+	ranked := router.Rank(observed)
+	balanced := router.Rank(shiftPriority(observed, router.PriorityBalanced))
+	for _, c := range ranked {
+		r.Candidates = append(r.Candidates, RouteCandidate{
+			Filters: routeFilters(c), Score: router.Score(c), Reason: router.Reason(c), Terms: router.Terms(c),
+		})
 		if c.Note != "" {
 			r.Note = joinNote(r.Note, c.Note)
 		}
@@ -259,8 +300,37 @@ func (d Deps) Route(ctx context.Context, o Options) (RouteReport, error) {
 		return r, nil
 	}
 	r.Winner = &r.Candidates[0].Filters
+	if len(balanced) > 0 {
+		bw := routeFilters(balanced[0])
+		bw.Priority = o.Filters.Priority
+		r.BalancedWinner = &bw
+	}
+	r.PriorityNote = router.PriorityEffect(o.Filters.Priority, ranked, balanced)
 	r.Reason = "lowest score wins; stable table order breaks ties; cached quota only: " + r.Candidates[0].Reason
+	if r.PriorityNote != "" {
+		r.Reason += "; " + r.PriorityNote
+	}
 	return r, nil
+}
+
+func routeFilters(c router.Candidate) store.Filters {
+	agent := ""
+	if c.Adapter != nil {
+		agent = c.Adapter.Name()
+	}
+	prio := c.Priority
+	if prio == "" {
+		prio = router.PriorityBalanced
+	}
+	return store.Filters{Provider: c.Provider, Model: c.Model, Effort: c.Effort, Agent: agent, Priority: prio}
+}
+
+func shiftPriority(cs []router.Candidate, priority string) []router.Candidate {
+	out := append([]router.Candidate(nil), cs...)
+	for i := range out {
+		out[i].Priority = priority
+	}
+	return out
 }
 
 func (d Deps) now() time.Time {

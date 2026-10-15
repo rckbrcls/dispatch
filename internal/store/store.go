@@ -47,6 +47,8 @@ type Filters struct {
 	Effort   string `json:"effort,omitempty"`
 	Agent    string `json:"agent,omitempty"`
 	Relax    bool   `json:"relax,omitempty"`
+	// Priority is speed, balanced, or quality. Empty on old rows means unknown.
+	Priority string `json:"priority,omitempty"`
 }
 
 type Record struct {

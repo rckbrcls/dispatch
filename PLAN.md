@@ -15,7 +15,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
 | 4 | Adapters (`doctor`, capabilities) + quota tipada **(feita)** | n/d (pode ir em paralelo à 3) | M |
 | 5c | Filtros explícitos: `--provider`, `--model`, `--effort`, `--agent` **(feita)** | 4 (capabilities) | M |
-| 5b | Prioridade `speed|balanced|quality` no roteador | 3b (dados de latência) | P/M |
+| 5b | Prioridade `speed|balanced|quality` no roteador **(feita)** | 3b (dados de latência) | P/M |
 | 5 | Merge gate **(feita)** | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |
 | 7 | Adiados (com gatilho) | 2 a 6 | n/d |
@@ -134,7 +134,7 @@ Detalhes:
 - `dispatch route` (dry-run, sem executar) mostra candidatos, o que cada filtro eliminou e por que o vencedor ganhou; os filtros aparecem no `RunSummary` (`requested` vs `resolved`) e nas agregações do `stats`.
 - Pronto quando: um teste com 2 agents servindo o mesmo modelo escolhe o agent por pace; `--provider` troca de modelo conforme tier/prioridade; `--model` + `--effort` roda sem chamar o ranking de modelo; filtro impossível falha com mensagem e sem fallback silencioso.
 
-## Fase 5b — Prioridade de roteamento
+## Fase 5b — Prioridade de roteamento (feita)
 - `--priority speed|balanced|quality` (padrão `balanced`) em `run`, e campo `priority` nos perfis de subagent; pode ter um padrão global em `~/.dispatch`.
 - Dentro do tier elegível, a prioridade só muda os **pesos** do ranking (não filtra): `speed` pondera p50 de duração e folga de pace; `quality` pondera a taxa de sucesso verificada; `balanced` mantém o comportamento atual.
 - Antes de haver dados: atributos estáticos na tabela de tiers (`speed` e `strength` por modelo, editáveis em `tiers.json`). Com dados da fase 3b, passam a ser sobrescritos por medições, com prior no valor estático e mínimo de amostras.

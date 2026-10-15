@@ -507,6 +507,42 @@ func TestProfileRoutingFiltersAndExplicitOverrides(t *testing.T) {
 	}
 }
 
+func TestPriorityProfileFlagAndConfig(t *testing.T) {
+	h, _ := setupTestEnv(t)
+	if err := os.MkdirAll(h, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h, "config.json"), []byte(`{"priority":"speed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h, "agents.json"), []byte(`{"agents":{"review":{"priority":"quality","tier":"hard"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o := runner.Options{}
+	if err := applyProfile(&o, "review", map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveRoutingPriority(h, o.Filters.Priority, false)
+	if err != nil || got != "quality" {
+		t.Fatalf("profile %s %v", got, err)
+	}
+	if got, err = resolveRoutingPriority(h, "speed", true); err != nil || got != "speed" {
+		t.Fatalf("flag %s %v", got, err)
+	}
+	if got, err = resolveRoutingPriority(h, "", false); err != nil || got != "speed" {
+		t.Fatalf("config %s %v", got, err)
+	}
+	if err := os.Remove(filepath.Join(h, "config.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = resolveRoutingPriority(h, "", false); err != nil || got != "balanced" {
+		t.Fatalf("default %s %v", got, err)
+	}
+	if _, err := resolveRoutingPriority(h, "turbo", true); err == nil {
+		t.Fatal("invalid flag accepted")
+	}
+}
+
 func TestRouteCommandDoesNotRunCLIsOrWriteState(t *testing.T) {
 	h, _ := setupTestEnv(t)
 	dir := t.TempDir()

@@ -263,6 +263,32 @@ func findRow(t *testing.T, rows []Row, key string) Row {
 	return Row{}
 }
 
+func TestEvidenceSegmentsByTierAndVerified(t *testing.T) {
+	ms := func(n int64) *int64 { return &n }
+	recs := []store.Record{
+		{ID: "1", Status: store.Completed, Tier: "easy", Model: "m", Verification: "verified", RunMs: ms(1000)},
+		{ID: "2", Status: store.Completed, Tier: "easy", Model: "m", Verification: "unverified", RunMs: ms(3000)},
+		{ID: "3", Status: store.Completed, Tier: "hard", Model: "m", Verification: "verified", RunMs: ms(9000)},
+		{ID: "4", Status: store.Running, Tier: "easy", Model: "m", Verification: "verified", RunMs: ms(1)},
+		{ID: "5", Status: store.Completed, Tier: "easy", Model: "", Verification: "verified", RunMs: ms(1)},
+	}
+	ev := EvidenceByTierModel(recs)
+	easy := ev[EvidenceKey("easy", "m")]
+	hard := ev[EvidenceKey("hard", "m")]
+	if easy.Samples != 2 || easy.Verified != 1 || easy.VerifiedRate != 0.5 || easy.DurationN != 2 {
+		t.Fatalf("%+v", easy)
+	}
+	if easy.P50Ms == nil || *easy.P50Ms != 1000 || hard.P50Ms == nil || *hard.P50Ms != 9000 {
+		t.Fatalf("easy %+v hard %+v", easy, hard)
+	}
+	if hard.Samples != 1 || hard.Verified != 1 || hard.VerifiedRate != 1 {
+		t.Fatalf("%+v", hard)
+	}
+	if _, ok := ev[EvidenceKey("easy", "")]; ok {
+		t.Fatal("empty model counted")
+	}
+}
+
 func TestRoutingFilterAggregations(t *testing.T) {
 	r := store.Record{ID: "filters", Status: store.Completed, Requested: &store.Filters{Provider: "google"}, Resolved: &store.Filters{Provider: "google", Model: "gemini-fast", Agent: "antigravity", Effort: "high"}}
 	for _, by := range []string{"requested", "resolved"} {

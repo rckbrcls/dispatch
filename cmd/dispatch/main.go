@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"dispatch/internal/adapter"
+	"dispatch/internal/config"
 	"dispatch/internal/hook"
+	"dispatch/internal/router"
 	"dispatch/internal/runner"
 	"dispatch/internal/sandbox"
 	"dispatch/internal/skill"
@@ -43,8 +45,8 @@ const usageText = `usage:
   dispatch agents [--json]
   dispatch doctor [--json]
   dispatch tiers [--init | --check]
-  dispatch route [--tier T] [--provider P] [--model M] [--effort E] [--agent A] [--relax] [--json]
-  dispatch run [--provider P] [--model M] [--effort E] [--agent A] [--relax] --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
+  dispatch route [--tier T] [--provider P] [--model M] [--effort E] [--agent A] [--priority speed|balanced|quality] [--relax] [--json]
+  dispatch run [--provider P] [--model M] [--effort E] [--agent A] [--priority speed|balanced|quality] [--relax] --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
                [--background] [--no-worktree] [--no-verify] [--json] <prompt | ->
   dispatch run --as <subagent> [flags] <prompt | ->   (profile from agents.json)
   dispatch subagents [--init | --check]
@@ -63,7 +65,7 @@ const usageText = `usage:
   dispatch skill refresh   (rewrite already-installed skill copies)
   dispatch result <id> [--section summary|verification|files|agent|attempts|meta|output] [--offset N] [--limit N] [--json]
 
-state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json, baselines/`
+state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json, config.json, baselines/`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -391,7 +393,7 @@ func checkTiers(t tiers.Table) int {
 		known[a.Name()] = a
 	}
 	models := map[string]map[string]bool{}
-	problems := t.CapabilityProblems(adapter.Known())
+	problems := append(t.FieldProblems(), t.CapabilityProblems(adapter.Known())...)
 	for tier, entries := range t.Tiers {
 		for _, e := range entries {
 			a, ok := known[e.Agent]
@@ -595,6 +597,7 @@ func runCommand(args []string, dry bool) int {
 	effort := fs.String("effort", "", "low|medium|high|xhigh")
 	agent := fs.String("agent", "", "restrict CLI agent")
 	relax := fs.Bool("relax", false, "allow fallback to tier routing")
+	priority := fs.String("priority", "", "speed|balanced|quality (default balanced)")
 	words := parseInterspersed(fs, args)
 	if dry {
 		if *execID != "" || *resume != "" || *bg {
@@ -633,17 +636,22 @@ func runCommand(args []string, dry bool) int {
 		fatalUsage("empty prompt")
 	}
 	opts := runner.Options{
-		Filters: store.Filters{Provider: *provider, Model: *model, Effort: *effort, Agent: *agent, Relax: *relax},
+		Filters: store.Filters{Provider: *provider, Model: *model, Effort: *effort, Agent: *agent, Relax: *relax, Priority: *priority},
 		Tier:    adapter.Tier(*tier), Prompt: prompt, Dir: *dir, ReadOnly: *ro,
 		Timeout: *timeout, NoWorktree: *noWT, NoVerify: *noVerify, Resume: *resume,
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if *as != "" {
-		set := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if err := applyProfile(&opts, *as, set); err != nil {
 			fatal(err)
 		}
 	}
+	resolvedPriority, err := resolveRoutingPriority(home(), opts.Filters.Priority, set["priority"])
+	if err != nil {
+		fatal(err)
+	}
+	opts.Filters.Priority = resolvedPriority
 
 	if opts.Tier == "" && opts.Filters.Model == "" && opts.Filters.Provider == "" {
 		opts.Tier = adapter.TierNormal
@@ -676,6 +684,9 @@ func runCommand(args []string, dry bool) int {
 			}
 			if report.Note != "" {
 				fmt.Println("note:", report.Note)
+			}
+			if report.PriorityNote != "" {
+				fmt.Println("priority:", report.PriorityNote)
 			}
 		}
 		if report.Winner == nil {
@@ -1330,6 +1341,26 @@ func updateCmd(args []string) int {
 
 // --- subagents ---
 
+// resolveRoutingPriority applies an explicit flag, else the current value
+// (usually a subagent profile), else ~/.dispatch/config.json, else balanced.
+func resolveRoutingPriority(dispatchHome, current string, explicit bool) (string, error) {
+	p := current
+	if !explicit && p == "" {
+		cfg, err := config.Load(config.Path(dispatchHome))
+		if err != nil {
+			return "", err
+		}
+		p = cfg.Priority
+	}
+	if p == "" {
+		p = router.PriorityBalanced
+	}
+	if !router.ValidPriority(p) {
+		return "", fmt.Errorf("invalid priority %q (want speed|balanced|quality)", p)
+	}
+	return p, nil
+}
+
 func subagentPaths(dir string) (user, project string) {
 	if dir == "" {
 		dir, _ = os.Getwd()
@@ -1363,6 +1394,9 @@ func applyProfile(o *runner.Options, name string, set map[string]bool) error {
 	}
 	if !set["relax"] {
 		o.Filters.Relax = p.Relax
+	}
+	if !set["priority"] && p.Priority != "" {
+		o.Filters.Priority = p.Priority
 	}
 	if !set["tier"] && p.Tier != "" {
 		o.Tier = adapter.Tier(p.Tier)
