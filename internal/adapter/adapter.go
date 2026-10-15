@@ -50,6 +50,8 @@ type Request struct {
 	ResumeSession string
 	// Env passes a sanitized environment to the child agent subprocess.
 	Env []string
+	// Started persists the agent group leader before waiting for it.
+	Started func(int) error
 }
 
 // Result is the raw outcome of a run, before compaction.

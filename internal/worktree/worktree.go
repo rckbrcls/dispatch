@@ -85,6 +85,10 @@ func Create(root, path, id string) (branch string, err error) {
 // Commit stages and commits everything in the worktree. It reports whether
 // a commit was made (false when there was nothing to commit).
 func Commit(path, id string) (bool, error) {
+	return commit(path, "dispatch run "+id)
+}
+
+func commit(path, message string) (bool, error) {
 	out, err := git(path, "status", "--porcelain")
 	if err != nil || out == "" {
 		return false, err
@@ -93,7 +97,7 @@ func Commit(path, id string) (bool, error) {
 		return false, err
 	}
 	_, err = git(path, "-c", "user.name=dispatch", "-c", "user.email=dispatch@localhost",
-		"commit", "-q", "-m", "dispatch run "+id)
+		"commit", "-q", "-m", message)
 	return err == nil, err
 }
 
@@ -105,6 +109,15 @@ func Merge(root, branch, id string) (string, error) {
 // Remove deletes the worktree and its branch. The branch is deleted with -d
 // (merged only) unless force is set.
 func Remove(root, path, branch string, force bool) error {
+	if !force {
+		status, err := git(path, "status", "--porcelain")
+		if err != nil {
+			return err
+		}
+		if status != "" {
+			return fmt.Errorf("worktree is dirty; use --force to discard changes")
+		}
+	}
 	args := []string{"worktree", "remove", path}
 	if force {
 		args = append(args, "--force")
@@ -127,4 +140,40 @@ func Rel(root, dir string) string {
 		return "."
 	}
 	return r
+}
+
+// Head returns the commit used as the base of a new worktree.
+func Head(path string) (string, error) { return git(path, "rev-parse", "HEAD") }
+
+// Recover checks the run branch before committing and reporting its diff.
+func Recover(path, branch, base, id string) (string, error) {
+	current, err := git(path, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if branch == "" || current != branch {
+		return "", fmt.Errorf("worktree is not on run branch %s", branch)
+	}
+	if base == "" {
+		// Older runs predate BaseSHA; use the branch's creation reflog entry.
+		base, err = git(path, "rev-parse", branch+"@{0}")
+		if err != nil {
+			return "", err
+		}
+		log, err := git(path, "reflog", "show", "--format=%H", branch)
+		if err != nil {
+			return "", err
+		}
+		entries := strings.Fields(log)
+		if len(entries) > 0 {
+			base = entries[len(entries)-1]
+		}
+	}
+	if _, err := git(path, "rev-parse", "--verify", base+"^{commit}"); err != nil {
+		return "", err
+	}
+	if _, err := commit(path, "dispatch recover "+id); err != nil {
+		return "", err
+	}
+	return git(path, "diff", "--stat", base, "HEAD", "--")
 }

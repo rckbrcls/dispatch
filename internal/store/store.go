@@ -19,6 +19,7 @@ import (
 type Status string
 
 const (
+	Orphaned  Status = "ORPHANED"
 	Pending   Status = "PENDING"
 	Running   Status = "RUNNING"
 	Completed Status = "COMPLETED"
@@ -51,6 +52,10 @@ type Record struct {
 	Profile    string    `json:"profile,omitempty"`
 	Prefer     []string  `json:"prefer,omitempty"`
 	Avoid      []string  `json:"avoid,omitempty"`
+	StartedAt  time.Time `json:"startedAt,omitempty,omitzero"`
+	AgentPID   int       `json:"agentPid,omitempty"`
+	ProcStart  string    `json:"procStart,omitempty"`
+	BaseSHA    string    `json:"baseSHA,omitempty"`
 	PID        int       `json:"pid,omitempty"`
 	SessionID  string    `json:"sessionId,omitempty"`
 	ResumedOf  string    `json:"resumedOf,omitempty"`

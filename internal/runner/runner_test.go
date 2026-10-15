@@ -37,6 +37,7 @@ func (f fake) Run(_ context.Context, r adapter.Request, m string) (adapter.Resul
 }
 
 func deps(t *testing.T, ran *[]string, a ...adapter.Adapter) Deps {
+	t.Chdir(t.TempDir())
 	t.Setenv(depthEnv, "")
 	t.Setenv(noDelegateEnv, "")
 	return Deps{
@@ -204,13 +205,13 @@ func TestCancelOrphanAndWait(t *testing.T) {
 	rec := store.Record{ID: "r-1", Status: store.Running, PID: 999999, CreatedAt: time.Now()}
 	d.Store.Append(rec)
 	out, err := d.Cancel(context.Background(), "r-1")
-	if err != nil || out.Status != store.Cancelled {
+	if err != nil || out.Status != store.Orphaned {
 		t.Fatalf("%+v %v", out, err)
 	}
 	rec2 := store.Record{ID: "r-2", Status: store.Running, PID: 999999, CreatedAt: time.Now()}
 	d.Store.Append(rec2)
 	w, err := d.Wait(context.Background(), "r-2", 10*time.Millisecond)
-	if err != nil || w.Status != store.Failed {
+	if err != nil || w.Status != store.Orphaned {
 		t.Fatalf("%+v %v", w, err)
 	}
 }

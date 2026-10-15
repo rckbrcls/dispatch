@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -74,7 +75,6 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 		}
 	}
 	cmd := exec.CommandContext(ctx, c.binary, c.args(req, model, session, resume)...)
-	ownGroup(cmd)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
 	} else {
@@ -85,8 +85,11 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr := cmd.Run()
+	runErr := runAgent(cmd, req.Started)
 
+	if errors.Is(runErr, ErrProcessesAlive) {
+		return Result{ExitCode: -1}, runErr
+	}
 	res := Result{ExitCode: cmd.ProcessState.ExitCode(), SessionID: session}
 	if c.parse != nil {
 		var parsed string

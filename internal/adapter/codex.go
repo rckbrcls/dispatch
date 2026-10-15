@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -176,7 +177,6 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	}
 	args = append(args, "-") // prompt from stdin
 	cmd := exec.CommandContext(ctx, "codex", args...)
-	ownGroup(cmd)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
 	} else {
@@ -186,8 +186,11 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	cmd.Stdin = bytes.NewBufferString(req.Prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr := cmd.Run()
+	runErr := runAgent(cmd, req.Started)
 
+	if errors.Is(runErr, ErrProcessesAlive) {
+		return Result{ExitCode: -1}, runErr
+	}
 	res := Result{ExitCode: cmd.ProcessState.ExitCode(), SessionID: req.ResumeSession}
 	if id := codexThreadID(stdout.Bytes()); id != "" {
 		res.SessionID = id
