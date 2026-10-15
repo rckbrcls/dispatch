@@ -27,3 +27,16 @@ func TestInstall(t *testing.T) {
 		t.Fatal(p)
 	}
 }
+
+func TestIsInstalled(t *testing.T) {
+	dir := t.TempDir()
+	if IsInstalled(dir) {
+		t.Fatal("expected IsInstalled to be false before install")
+	}
+	if _, err := Install(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	if !IsInstalled(dir) {
+		t.Fatal("expected IsInstalled to be true after install")
+	}
+}

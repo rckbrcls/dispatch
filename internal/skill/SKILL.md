@@ -112,6 +112,9 @@ no ranking, não filtros: um agente evitado ainda roda se for o único com folga
 ## Diagnóstico
 
 ```bash
+dispatch status          # status do dispatch (on/off), hook e skill
+dispatch on / off        # liga/desliga injeção de contexto em novas sessões
+dispatch hook install / uninstall # registra/remove hook SessionStart do Claude
 dispatch agents          # CLIs instalados
 dispatch tiers           # tabela efetiva (edite ~/.dispatch/tiers.json após `dispatch tiers --init`)
 dispatch tiers --check   # valida a tabela contra agentes e modelos instalados
