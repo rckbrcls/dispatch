@@ -43,13 +43,14 @@ const usageText = `usage:
   dispatch agents [--json]
   dispatch doctor [--json]
   dispatch tiers [--init | --check]
-  dispatch run --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
+  dispatch route [--tier T] [--provider P] [--model M] [--effort E] [--agent A] [--relax] [--json]
+  dispatch run [--provider P] [--model M] [--effort E] [--agent A] [--relax] --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
                [--background] [--no-worktree] [--no-verify] [--json] <prompt | ->
   dispatch run --as <subagent> [flags] <prompt | ->   (profile from agents.json)
   dispatch subagents [--init | --check]
   dispatch run --resume <id> [--background] <follow-up prompt | ->
   dispatch wait <id> [--timeout 10m] [--json]
-  dispatch stats [--by model|agent|provider|tier|effort|day|week] [--since 7d] [--json] [--capacity]
+  dispatch stats [--by model|agent|provider|tier|effort|day|week|requested|resolved] [--since 7d] [--json] [--capacity]
   dispatch list [--status S] [--limit N]
   dispatch cancel <id>
   dispatch recover <id>   (ORPHANED worktree; commits preserved changes)
@@ -88,6 +89,8 @@ func main() {
 		os.Exit(subagentsCmd(args))
 	case "tiers":
 		tiersCmd(args)
+	case "route":
+		os.Exit(runCommand(args, true))
 	case "run":
 		os.Exit(run(args))
 	case "result":
@@ -267,6 +270,23 @@ func doctorCmd(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	reports := adapter.Doctor(ctx)
+	table, tableErr := tiers.Load(tiersPath())
+	var tableProblems []string
+	if tableErr != nil {
+		tableProblems = []string{tableErr.Error()}
+	} else {
+		tableProblems = table.CapabilityProblems(adapter.Known())
+	}
+	for i := range reports {
+		if len(tableProblems) > 0 {
+			reports[i].Status = adapter.StatusDegraded
+			reports[i].Notes = append(reports[i].Notes, tableProblems...)
+		}
+	}
+	if len(reports) == 0 && len(tableProblems) > 0 {
+		fmt.Fprintln(os.Stderr, strings.Join(tableProblems, "; "))
+		return 1
+	}
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -310,6 +330,11 @@ func doctorCmd(args []string) int {
 
 func formatCaps(c adapter.Capabilities) string {
 	var parts []string
+	mode := c.EffortMode
+	if mode == "" {
+		mode = "unsupported"
+	}
+	parts = append(parts, "effort="+mode)
 	if c.SessionResume {
 		parts = append(parts, "sessionResume")
 	}
@@ -366,7 +391,7 @@ func checkTiers(t tiers.Table) int {
 		known[a.Name()] = a
 	}
 	models := map[string]map[string]bool{}
-	var problems []string
+	problems := t.CapabilityProblems(adapter.Known())
 	for tier, entries := range t.Tiers {
 		for _, e := range entries {
 			a, ok := known[e.Agent]
@@ -392,6 +417,14 @@ func checkTiers(t tiers.Table) int {
 			}
 			if len(models[e.Agent]) > 0 && !models[e.Agent][e.Model] {
 				problems = append(problems, fmt.Sprintf("%s: %s does not list model %q", tier, e.Agent, e.Model))
+			}
+			if a.Capabilities().EffortMode == "model-suffix" {
+				for _, effort := range e.Efforts {
+					variant := adapter.BaseModel(e.Model) + "-" + effort
+					if len(models[e.Agent]) > 0 && !models[e.Agent][variant] {
+						problems = append(problems, fmt.Sprintf("%s: %s does not list effort variant %q", tier, e.Agent, variant))
+					}
+				}
 			}
 		}
 	}
@@ -542,9 +575,11 @@ func readPrompt(words []string) string {
 	return prompt
 }
 
-func run(args []string) int {
+func run(args []string) int { return runCommand(args, false) }
+
+func runCommand(args []string, dry bool) int {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	tier := fs.String("tier", "normal", "easy|normal|hard")
+	tier := fs.String("tier", "", "easy|normal|hard")
 	dir := fs.String("dir", "", "working directory for the agent")
 	ro := fs.Bool("readonly", false, "forbid file edits")
 	timeout := fs.Duration("timeout", 0, "max run time (0 = none)")
@@ -555,13 +590,24 @@ func run(args []string) int {
 	as := fs.String("as", "", "subagent profile from agents.json (explicit flags override it)")
 	execID := fs.String("exec", "", "internal: execute a pre-created run")
 	asJSON := fs.Bool("json", true, "compact RunSummary JSON; --json=false prints 3 lines")
+	provider := fs.String("provider", "", "restrict model provider")
+	model := fs.String("model", "", "restrict model")
+	effort := fs.String("effort", "", "low|medium|high|xhigh")
+	agent := fs.String("agent", "", "restrict CLI agent")
+	relax := fs.Bool("relax", false, "allow fallback to tier routing")
 	words := parseInterspersed(fs, args)
+	if dry {
+		if *execID != "" || *resume != "" || *bg {
+			fmt.Fprintln(os.Stderr, "route does not support --exec, --resume or --background")
+			return 1
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	d := deps()
 
-	if *execID != "" { // detached child of --background
+	if !dry && *execID != "" { // detached child of --background
 		rec, err := d.Store.Get(*execID)
 		if err != nil {
 			fatal(err)
@@ -574,15 +620,21 @@ func run(args []string) int {
 		return exitCode(rec.Status)
 	}
 
-	if err := d.Reconcile(ctx); err != nil {
-		fatal(err)
+	if !dry {
+		if err := d.Reconcile(ctx); err != nil {
+			fatal(err)
+		}
 	}
-	prompt := readPrompt(words)
-	if prompt == "" {
+	prompt := ""
+	if !dry || len(words) > 0 {
+		prompt = readPrompt(words)
+	}
+	if prompt == "" && !dry {
 		fatalUsage("empty prompt")
 	}
 	opts := runner.Options{
-		Tier: adapter.Tier(*tier), Prompt: prompt, Dir: *dir, ReadOnly: *ro,
+		Filters: store.Filters{Provider: *provider, Model: *model, Effort: *effort, Agent: *agent, Relax: *relax},
+		Tier:    adapter.Tier(*tier), Prompt: prompt, Dir: *dir, ReadOnly: *ro,
 		Timeout: *timeout, NoWorktree: *noWT, NoVerify: *noVerify, Resume: *resume,
 	}
 	if *as != "" {
@@ -593,6 +645,44 @@ func run(args []string) int {
 		}
 	}
 
+	if opts.Tier == "" && opts.Filters.Model == "" && opts.Filters.Provider == "" {
+		opts.Tier = adapter.TierNormal
+	}
+	if dry {
+		report, err := d.Route(ctx, opts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		jsonSet := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "json" {
+				jsonSet = true
+			}
+		})
+		if jsonSet && *asJSON {
+			printJSON(report)
+		} else {
+			for _, c := range report.Candidates {
+				fmt.Printf("candidate: %s/%s provider=%s effort=%s %s\n", c.Agent, c.Model, c.Provider, c.Effort, c.Reason)
+			}
+			for _, reason := range report.Eliminated {
+				fmt.Println("eliminated:", reason)
+			}
+			if report.Winner != nil {
+				fmt.Printf("winner: %s/%s: %s\n", report.Winner.Agent, report.Winner.Model, report.Reason)
+			} else {
+				fmt.Println("FAILED:", report.Reason)
+			}
+			if report.Note != "" {
+				fmt.Println("note:", report.Note)
+			}
+		}
+		if report.Winner == nil {
+			return 1
+		}
+		return 0
+	}
 	if *bg {
 		rec, err := d.Begin(opts)
 		if err != nil {
@@ -606,7 +696,7 @@ func run(args []string) int {
 	}
 
 	rec, err := d.Run(ctx, opts)
-	if err != nil && rec.ID == "" {
+	if err != nil {
 		fatal(err)
 	}
 	emitSummary(rec, *asJSON)
@@ -680,7 +770,7 @@ func wait(args []string) int {
 
 func statsCmd(args []string) int {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
-	by := fs.String("by", "model", "model|agent|provider|tier|effort|day|week")
+	by := fs.String("by", "model", "model|agent|provider|tier|effort|day|week|requested|resolved")
 	since := fs.String("since", "7d", "window such as 7d, 24h, 30m, 2w, or all")
 	asJSON := fs.Bool("json", false, "print JSON")
 	capacity := fs.Bool("capacity", false, "quota windows from snapshots.jsonl")
@@ -1258,6 +1348,21 @@ func applyProfile(o *runner.Options, name string, set map[string]bool) error {
 	p, ok := profiles[name]
 	if !ok {
 		return fmt.Errorf("unknown subagent %q (have: %s)", name, strings.Join(subagent.Names(profiles), ", "))
+	}
+	if !set["provider"] {
+		o.Filters.Provider = p.Provider
+	}
+	if !set["model"] {
+		o.Filters.Model = p.Model
+	}
+	if !set["effort"] {
+		o.Filters.Effort = p.Effort
+	}
+	if !set["agent"] {
+		o.Filters.Agent = p.Agent
+	}
+	if !set["relax"] {
+		o.Filters.Relax = p.Relax
 	}
 	if !set["tier"] && p.Tier != "" {
 		o.Tier = adapter.Tier(p.Tier)

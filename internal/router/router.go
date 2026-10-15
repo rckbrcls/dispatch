@@ -2,6 +2,7 @@
 package router
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -11,11 +12,14 @@ import (
 
 // Candidate is one adapter/model able to serve the requested tier.
 type Candidate struct {
-	Adapter adapter.Adapter
-	Model   string
-	Quota   *adapter.Quota // nil when unknown
-	Pace    *pace.Pace
-	Hist    *pace.History // nil unless >=5 complete weeks are on record
+	Adapter  adapter.Adapter
+	Provider string
+	Effort   string
+	Note     string
+	Model    string
+	Quota    *adapter.Quota // nil when unknown
+	Pace     *pace.Pace
+	Hist     *pace.History // nil unless >=5 complete weeks are on record
 	// CooledDown marks an agent that recently hit a rate limit.
 	CooledDown bool
 	// Bias is a soft preference added to the score (negative = preferred).
@@ -67,3 +71,18 @@ const (
 	PreferBias = -50
 	AvoidBias  = 1500
 )
+
+// Score is the same ordering value used by Rank; lower wins.
+func Score(c Candidate) float64 { return score(c) }
+
+// Reason exposes the observations that contributed to a routing score.
+func Reason(c Candidate) string {
+	basis := "quota unknown"
+	if c.Pace != nil {
+		basis = fmt.Sprintf("pace delta=%.2f deficit=%t willLast=%t", c.Pace.Delta, c.Pace.Deficit, c.Pace.WillLast)
+	}
+	if c.Hist != nil && c.Hist.Valid {
+		basis += fmt.Sprintf(" historyRisk=%.2f", c.Hist.Risk)
+	}
+	return fmt.Sprintf("score=%.2f (%s; bias=%.2f)", score(c), basis, c.Bias)
+}

@@ -15,8 +15,10 @@ import (
 var defaultJSON []byte
 
 type Entry struct {
-	Agent string `json:"agent"`
-	Model string `json:"model"`
+	Provider string   `json:"provider,omitempty"`
+	Efforts  []string `json:"efforts,omitempty"`
+	Agent    string   `json:"agent"`
+	Model    string   `json:"model"`
 }
 
 type Table struct {
@@ -65,11 +67,61 @@ func parse(b []byte) (Table, error) {
 		if !tier.Valid() {
 			return Table{}, fmt.Errorf("unknown tier %q", tier)
 		}
-		for _, e := range es {
+		for i, e := range es {
+			if e.Provider == "" {
+				e.Provider = adapter.ProviderOf(e.Agent, e.Model)
+				es[i].Provider = e.Provider
+			}
+			for _, effort := range e.Efforts {
+				if !adapter.ValidEffort(effort) {
+					return Table{}, fmt.Errorf("tier %s: invalid effort %q", tier, effort)
+				}
+			}
+			if derived := adapter.ProviderOf("", e.Model); e.Provider != "" && derived != "" && e.Provider != derived {
+				return Table{}, fmt.Errorf("tier %s: provider %q disagrees with model %s", tier, e.Provider, e.Model)
+			}
 			if e.Agent == "" || e.Model == "" {
 				return Table{}, fmt.Errorf("tier %q: entries need agent and model", tier)
 			}
 		}
 	}
 	return t, nil
+}
+
+// CapabilityProblems validates declared effort controls without invoking CLIs.
+func (t Table) CapabilityProblems(adapters []adapter.Adapter) []string {
+	var problems []string
+	for tier, entries := range t.Tiers {
+		for _, e := range entries {
+			for _, a := range adapters {
+				if a.Name() != e.Agent {
+					continue
+				}
+				caps := a.Capabilities()
+				for _, effort := range e.Efforts {
+					supported := true
+					if !adapter.ValidEffort(effort) {
+						supported = false
+					}
+					switch caps.EffortMode {
+					case "config":
+						found := false
+						for _, v := range caps.Efforts {
+							if v == effort {
+								found = true
+							}
+						}
+						supported = supported && found
+					case "model-suffix":
+					default:
+						supported = supported && adapter.EffortOf(e.Model) == effort
+					}
+					if !supported {
+						problems = append(problems, fmt.Sprintf("%s: %s/%s: effort %s unsupported by agent", tier, e.Agent, e.Model, effort))
+					}
+				}
+			}
+		}
+	}
+	return problems
 }

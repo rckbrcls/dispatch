@@ -24,11 +24,13 @@ func (t Tier) Valid() bool {
 // them. A run that needs a capability the CLI does not provide is refused.
 // Usage is true only when an official quota source exists.
 type Capabilities struct {
-	SessionResume    bool `json:"sessionResume"`
-	StructuredOutput bool `json:"structuredOutput"`
-	ReadOnly         bool `json:"readOnly"`
-	FileEditing      bool `json:"fileEditing"`
-	Usage            bool `json:"usage"`
+	EffortMode       string   `json:"effortMode"` // config, model-suffix, or unsupported (empty)
+	Efforts          []string `json:"efforts,omitempty"`
+	SessionResume    bool     `json:"sessionResume"`
+	StructuredOutput bool     `json:"structuredOutput"`
+	ReadOnly         bool     `json:"readOnly"`
+	FileEditing      bool     `json:"fileEditing"`
+	Usage            bool     `json:"usage"`
 }
 
 // Quota is a normalized usage window reported by a collector.
@@ -43,6 +45,7 @@ type Quota struct {
 
 // Request is a single delegated task.
 type Request struct {
+	Effort   string
 	Prompt   string
 	Tier     Tier
 	Dir      string

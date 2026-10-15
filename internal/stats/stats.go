@@ -3,6 +3,7 @@
 package stats
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -78,7 +79,7 @@ type Rank struct {
 // ValidBy reports whether --by accepts name.
 func ValidBy(name string) bool {
 	switch name {
-	case "model", "agent", "provider", "tier", "effort", "day", "week":
+	case "model", "agent", "provider", "tier", "effort", "day", "week", "requested", "resolved":
 		return true
 	default:
 		return false
@@ -202,6 +203,16 @@ func buckets(recs []store.Record, by string) map[string]*acc {
 
 func groupKey(r store.Record, by string) string {
 	switch by {
+	case "requested", "resolved":
+		f := r.Requested
+		if by == "resolved" {
+			f = r.Resolved
+		}
+		if f == nil {
+			return "desconhecido"
+		}
+		b, _ := json.Marshal(f)
+		return string(b)
 	case "model":
 		return known(r.Model)
 	case "agent":
