@@ -46,6 +46,9 @@ type Record struct {
 	Attempts   []Attempt `json:"attempts,omitempty"`
 	TimeoutSec int       `json:"timeoutSec,omitempty"`
 	NoWorktree bool      `json:"noWorktree,omitempty"`
+	Profile    string    `json:"profile,omitempty"`
+	Prefer     []string  `json:"prefer,omitempty"`
+	Avoid      []string  `json:"avoid,omitempty"`
 	PID        int       `json:"pid,omitempty"`
 	SessionID  string    `json:"sessionId,omitempty"`
 	ResumedOf  string    `json:"resumedOf,omitempty"`

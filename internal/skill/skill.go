@@ -45,3 +45,25 @@ func Install(dir string, force bool) (string, error) {
 	}
 	return path, os.WriteFile(path, Content, 0o644)
 }
+
+// Refresh rewrites the skill only where dispatch already installed it, so an
+// update never creates new skill files. It returns the paths rewritten.
+func Refresh(home string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, t := range Targets(home) {
+		if seen[t.Dir] {
+			continue
+		}
+		seen[t.Dir] = true
+		path := filepath.Join(t.Dir, Name, "SKILL.md")
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := os.WriteFile(path, Content, 0o644); err != nil {
+			return out, err
+		}
+		out = append(out, path)
+	}
+	return out, nil
+}

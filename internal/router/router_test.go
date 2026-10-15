@@ -34,3 +34,15 @@ func TestRankCooldownAndRisk(t *testing.T) {
 		}
 	}
 }
+
+func TestBiasPreferAndAvoid(t *testing.T) {
+	// Both agents have the same reserve; prefer wins the tie, avoid loses to unknown quota.
+	reserve := pace.Pace{Delta: -20, WillLast: true}
+	a := Candidate{Model: "a", Pace: &reserve, Bias: AvoidBias}
+	b := Candidate{Model: "b", Pace: &reserve, Bias: PreferBias}
+	c := Candidate{Model: "c"} // unknown quota
+	got := Rank([]Candidate{a, c, b})
+	if got[0].Model != "b" || got[1].Model != "c" || got[2].Model != "a" {
+		t.Fatalf("order = %s %s %s", got[0].Model, got[1].Model, got[2].Model)
+	}
+}

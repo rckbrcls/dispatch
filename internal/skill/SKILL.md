@@ -79,6 +79,19 @@ dispatch clean <id> [--force]                               # descarta o worktre
 
 Prefira `--resume` a um run novo quando o trabalho é continuação: o agente mantém o contexto.
 
+## Subagents (perfis nomeados)
+
+Perfis em `~/.dispatch/agents.json` (e `<repo>/.dispatch/agents.json`, que vence) fixam papel, tier,
+`readonly`, `timeout` e instruções. Use por papel em vez de repetir o brief:
+
+```bash
+dispatch subagents                 # lista os perfis efetivos
+dispatch run --as reviewer --dir <repo> --background - <<< "revise o branch X"
+```
+
+Flags explícitas (`--tier`, `--readonly`, `--timeout`) vencem o perfil. `prefer`/`avoid` são **pesos**
+no ranking, não filtros: um agente evitado ainda roda se for o único com folga.
+
 ## Flags úteis
 
 - `--readonly`: revisão/leitura; o agente não edita arquivos. Use para revisores.
@@ -102,4 +115,5 @@ Prefira `--resume` a um run novo quando o trabalho é continuação: o agente ma
 dispatch agents          # CLIs instalados
 dispatch tiers           # tabela efetiva (edite ~/.dispatch/tiers.json após `dispatch tiers --init`)
 dispatch tiers --check   # valida a tabela contra agentes e modelos instalados
+dispatch subagents --check   # valida os perfis (tier, timeout, agentes citados)
 ```

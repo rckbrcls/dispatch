@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -54,6 +55,9 @@ type Options struct {
 	Timeout    time.Duration
 	NoWorktree bool
 	Resume     string
+	// Subagent profile: name for the record, soft agent preferences.
+	Profile       string
+	Prefer, Avoid []string
 }
 
 func (d Deps) installed(bin string) bool {
@@ -76,7 +80,7 @@ func (d Deps) adapter(name string) adapter.Adapter {
 // Candidates resolves the tier table against installed adapters, attaches
 // quota, pace, history and cooldowns, and ranks them. Table order is kept
 // among equals.
-func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bool) []router.Candidate {
+func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bool, prefer, avoid []string) []router.Candidate {
 	var cs []router.Candidate
 	for _, e := range d.Table.Tiers[tier] {
 		a := d.adapter(e.Agent)
@@ -86,7 +90,14 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 		if needReadOnly && !a.Capabilities().ReadOnly {
 			continue
 		}
-		cs = append(cs, router.Candidate{Adapter: a, Model: e.Model})
+		c := router.Candidate{Adapter: a, Model: e.Model}
+		if slices.Contains(prefer, e.Agent) {
+			c.Bias += router.PreferBias
+		}
+		if slices.Contains(avoid, e.Agent) {
+			c.Bias += router.AvoidBias
+		}
+		cs = append(cs, c)
 	}
 
 	// One quota fetch per agent, in parallel; ModelQuoter adapters resolve
@@ -168,6 +179,7 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 		ID: store.NewID(), Status: store.Pending, Tier: string(o.Tier),
 		Prompt: o.Prompt, Dir: o.Dir, ReadOnly: o.ReadOnly, CreatedAt: d.Now(),
 		TimeoutSec: int(o.Timeout / time.Second), NoWorktree: o.NoWorktree,
+		Profile: o.Profile, Prefer: o.Prefer, Avoid: o.Avoid,
 	}
 	if o.Resume != "" {
 		prev, err := d.Store.Get(o.Resume)
@@ -238,7 +250,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 			}
 		}
 	} else {
-		cands = d.Candidates(ctx, adapter.Tier(rec.Tier), rec.ReadOnly)
+		cands = d.Candidates(ctx, adapter.Tier(rec.Tier), rec.ReadOnly, rec.Prefer, rec.Avoid)
 		if len(cands) == 0 {
 			return finish(store.Failed, "no installed agent serves tier "+rec.Tier)
 		}

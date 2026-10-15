@@ -18,6 +18,8 @@ type Candidate struct {
 	Hist    *pace.History // nil unless >=5 complete weeks are on record
 	// CooledDown marks an agent that recently hit a rate limit.
 	CooledDown bool
+	// Bias is a soft preference added to the score (negative = preferred).
+	Bias float64
 }
 
 // Rank orders candidates: known reserve first (most reserve on top), then
@@ -46,7 +48,7 @@ func score(c Candidate) float64 {
 	if c.CooledDown {
 		base += 10000
 	}
-	return base
+	return base + c.Bias
 }
 
 // Evaluate fills Pace from Quota at the given time.
@@ -58,3 +60,10 @@ func Evaluate(c *Candidate, now time.Time) {
 	p := pace.Linear(c.Quota.UsedPercent, w, c.Quota.ResetsAt, now)
 	c.Pace = &p
 }
+
+// Bias values for subagent profiles. Preferring breaks ties inside a pace
+// band; avoiding pushes an agent past unknown quota but not past deficit.
+const (
+	PreferBias = -50
+	AvoidBias  = 1500
+)

@@ -131,3 +131,10 @@ Comandos: `agents`, `tiers [--init|--check]`, `run` (`--tier`, `--dir`, `--reado
 - `scripts/release.sh` compila darwin/linux × arm64/amd64 em `dist/` com `checksums.txt`; publicar com `gh release create <versão> dist/*` em rckbrcls/dispatch.
 - `scripts/install.sh` baixa o binário do último release, confere o SHA-256 e instala em `~/.local/bin` (`DISPATCH_INSTALL_DIR`, `DISPATCH_VERSION`, `DISPATCH_REPO`, `DISPATCH_BASE_URL`).
 - Uso: `curl -fsSL https://rckbrcls.com/api/dispatch/install | sh` (servido pelo repo portfolio em `apps/portfolio/public/api/dispatch/install`; manter em sincronia com `scripts/install.sh`).
+- Atualização: `dispatch update [--check]` baixa o release mais novo (SHA-256), troca o binário e roda `skill refresh` (só reescreve cópias já instaladas). `dispatch version` mostra a versão embutida via `-X main.version`.
+
+## Subagents (perfis)
+- `~/.dispatch/agents.json` + `<repo>/.dispatch/agents.json` (projeto vence): `{"agents": {nome: {tier, readonly, instructions, prefer, avoid, timeout}}}`.
+- `dispatch run --as <nome>`: perfil preenche tier/readonly/timeout (flags explícitas vencem) e prefixa `instructions` ao prompt (não em `--resume`). `prefer`/`avoid` viram `Bias` no score do roteador (−50 / +1500): peso, não filtro. Gravados no Record para o `--background` re-executar igual.
+- `dispatch subagents [--init|--check]`: lista, cria exemplo, valida (tier, timeout, agentes conhecidos/instalados).
+

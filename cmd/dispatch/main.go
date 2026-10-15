@@ -19,15 +19,24 @@ import (
 	"dispatch/internal/runner"
 	"dispatch/internal/skill"
 	"dispatch/internal/store"
+	"dispatch/internal/subagent"
 	"dispatch/internal/tiers"
+	"dispatch/internal/update"
 	"dispatch/internal/worktree"
 )
 
+// version is set at release time: -ldflags "-X main.version=v0.1.0".
+var version = "dev"
+
 const usageText = `usage:
+  dispatch version
+  dispatch update [--check]
   dispatch agents [--json]
   dispatch tiers [--init | --check]
   dispatch run --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
                [--background] [--no-worktree] <prompt | ->
+  dispatch run --as <subagent> [flags] <prompt | ->   (profile from agents.json)
+  dispatch subagents [--init | --check]
   dispatch run --resume <id> [--background] <follow-up prompt | ->
   dispatch wait <id> [--timeout 10m]
   dispatch list [--status S] [--limit N]
@@ -36,9 +45,10 @@ const usageText = `usage:
   dispatch clean <id> [--force]
   dispatch skill install [--agent claude,codex,cursor,grok,antigravity|all] [--force]
   dispatch skill show
+  dispatch skill refresh   (rewrite already-installed skill copies)
   dispatch result <id> [--section output|meta|attempts] [--offset N] [--limit N]
 
-state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json`
+state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -48,6 +58,8 @@ func main() {
 	switch os.Args[1] {
 	case "agents":
 		agents(args)
+	case "subagents":
+		os.Exit(subagentsCmd(args))
 	case "tiers":
 		tiersCmd(args)
 	case "run":
@@ -66,6 +78,10 @@ func main() {
 		os.Exit(clean(args))
 	case "skill":
 		os.Exit(skillCmd(args))
+	case "version", "--version":
+		fmt.Println(version)
+	case "update":
+		os.Exit(updateCmd(args))
 	case "-h", "--help", "help":
 		fmt.Println(usageText)
 	default:
@@ -306,6 +322,7 @@ func run(args []string) int {
 	bg := fs.Bool("background", false, "return the id immediately; use wait/result")
 	noWT := fs.Bool("no-worktree", false, "write directly in --dir instead of a git worktree")
 	resume := fs.String("resume", "", "continue the session of an earlier run id")
+	as := fs.String("as", "", "subagent profile from agents.json (explicit flags override it)")
 	execID := fs.String("exec", "", "internal: execute a pre-created run")
 	words := parseInterspersed(fs, args)
 
@@ -332,6 +349,13 @@ func run(args []string) int {
 	opts := runner.Options{
 		Tier: adapter.Tier(*tier), Prompt: prompt, Dir: *dir, ReadOnly: *ro,
 		Timeout: *timeout, NoWorktree: *noWT, Resume: *resume,
+	}
+	if *as != "" {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if err := applyProfile(&opts, *as, set); err != nil {
+			fatal(err)
+		}
 	}
 
 	if *bg {
@@ -538,7 +562,7 @@ func result(args []string) int {
 
 func skillCmd(args []string) int {
 	if len(args) == 0 {
-		fatalUsage("skill needs a subcommand: install | show")
+		fatalUsage("skill needs a subcommand: install | show | refresh")
 	}
 	switch args[0] {
 	case "show":
@@ -546,6 +570,19 @@ func skillCmd(args []string) int {
 		return 0
 	case "install":
 		return skillInstall(args[1:])
+	case "refresh":
+		u, err := os.UserHomeDir()
+		if err != nil {
+			fatal(err)
+		}
+		paths, err := skill.Refresh(u)
+		for _, p := range paths {
+			fmt.Printf("~ %s\n", p)
+		}
+		if err != nil {
+			fatal(err)
+		}
+		return 0
 	}
 	fatalUsage("unknown skill subcommand " + args[0])
 	return 2
@@ -601,4 +638,156 @@ func skillInstall(args []string) int {
 		fmt.Printf("+ %-12s %s\n", name, path)
 	}
 	return code
+}
+
+// --- update ---
+
+func updateCmd(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "only report whether a newer release exists")
+	fs.Parse(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	src := update.Source{Repo: os.Getenv("DISPATCH_REPO"), BaseURL: os.Getenv("DISPATCH_BASE_URL")}
+	tag, err := src.Latest(ctx)
+	if err != nil {
+		fatal(err)
+	}
+	if tag == version {
+		fmt.Printf("dispatch %s is up to date\n", version)
+		return 0
+	}
+	if *check {
+		fmt.Printf("update available: %s -> %s (run: dispatch update)\n", version, tag)
+		return 0
+	}
+	self, err := os.Executable()
+	if err != nil {
+		fatal(err)
+	}
+	if self, err = filepath.EvalSymlinks(self); err != nil {
+		fatal(err)
+	}
+	bin, err := src.Fetch(ctx, tag, update.AssetName())
+	if err != nil {
+		fatal(err)
+	}
+	if err := update.Replace(self, bin); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("updated %s -> %s (%s)\n", version, tag, self)
+	// The new binary carries the new skill text; let it refresh the copies.
+	cmd := exec.Command(self, "skill", "refresh")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "dispatch: skill refresh failed:", err)
+		return 1
+	}
+	return 0
+}
+
+// --- subagents ---
+
+func subagentPaths(dir string) (user, project string) {
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	return filepath.Join(home(), "agents.json"), subagent.ProjectPath(dir)
+}
+
+// applyProfile fills opts from the named profile. Flags the caller set
+// explicitly (names in set) win over the profile.
+func applyProfile(o *runner.Options, name string, set map[string]bool) error {
+	user, project := subagentPaths(o.Dir)
+	profiles, err := subagent.LoadAll(user, project)
+	if err != nil {
+		return err
+	}
+	p, ok := profiles[name]
+	if !ok {
+		return fmt.Errorf("unknown subagent %q (have: %s)", name, strings.Join(subagent.Names(profiles), ", "))
+	}
+	if !set["tier"] && p.Tier != "" {
+		o.Tier = adapter.Tier(p.Tier)
+	}
+	if !set["readonly"] {
+		o.ReadOnly = p.ReadOnly
+	}
+	if !set["timeout"] && p.Timeout != "" {
+		d, err := time.ParseDuration(p.Timeout)
+		if err != nil {
+			return fmt.Errorf("subagent %s: invalid timeout %q", name, p.Timeout)
+		}
+		o.Timeout = d
+	}
+	if p.Instructions != "" && o.Resume == "" {
+		o.Prompt = p.Instructions + "\n\n" + o.Prompt
+	}
+	o.Profile, o.Prefer, o.Avoid = name, p.Prefer, p.Avoid
+	return nil
+}
+
+func subagentsCmd(args []string) int {
+	fs := flag.NewFlagSet("subagents", flag.ExitOnError)
+	init := fs.Bool("init", false, "write an example agents.json to edit")
+	check := fs.Bool("check", false, "validate profiles against known and installed agents")
+	dir := fs.String("dir", "", "project directory (default: cwd)")
+	fs.Parse(args)
+	user, project := subagentPaths(*dir)
+	if *init {
+		if _, err := os.Stat(user); err == nil {
+			fatal(fmt.Errorf("%s already exists", user))
+		}
+		if err := os.MkdirAll(home(), 0o755); err != nil {
+			fatal(err)
+		}
+		if err := os.WriteFile(user, []byte(subagent.Example), 0o644); err != nil {
+			fatal(err)
+		}
+		fmt.Println("wrote", user)
+		return 0
+	}
+	profiles, err := subagent.LoadAll(user, project)
+	if err != nil {
+		fatal(err)
+	}
+	if !*check {
+		printJSON(profiles)
+		return 0
+	}
+	known := map[string]bool{}
+	for _, a := range adapter.Known() {
+		known[a.Name()] = true
+	}
+	t, err := tiers.Load(tiersPath())
+	if err != nil {
+		fatal(err)
+	}
+	var problems []string
+	for _, name := range subagent.Names(profiles) {
+		p := profiles[name]
+		problems = append(problems, subagent.Validate(name, p, known)...)
+		if p.Tier != "" && len(t.Tiers[adapter.Tier(p.Tier)]) == 0 {
+			problems = append(problems, fmt.Sprintf("%s: tier %q has no entries in the tier table", name, p.Tier))
+		}
+		for _, a := range append(append([]string{}, p.Prefer...), p.Avoid...) {
+			for _, k := range adapter.Known() {
+				if k.Name() != a {
+					continue
+				}
+				if _, err := exec.LookPath(k.Binary()); err != nil {
+					problems = append(problems, fmt.Sprintf("%s: %s is not installed", name, a))
+				}
+			}
+		}
+	}
+	if len(problems) == 0 {
+		fmt.Printf("ok: %d subagent(s)\n", len(profiles))
+		return 0
+	}
+	for _, p := range problems {
+		fmt.Println("!", p)
+	}
+	return 1
 }
