@@ -128,6 +128,7 @@ func (d Deps) Cancel(ctx context.Context, id string) (store.Record, error) {
 		return rec, nil
 	}
 	rec.Status, rec.Error, rec.FinishedAt = store.Cancelled, "cancelled", d.Now()
+	rec.ExitClass = ExitClass(store.Cancelled, rec.Verification)
 	return rec, d.Store.Append(rec)
 }
 

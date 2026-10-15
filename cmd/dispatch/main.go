@@ -24,6 +24,7 @@ import (
 	"dispatch/internal/subagent"
 	"dispatch/internal/tiers"
 	"dispatch/internal/update"
+	"dispatch/internal/verify"
 	"dispatch/internal/worktree"
 )
 
@@ -41,7 +42,7 @@ const usageText = `usage:
   dispatch agents [--json]
   dispatch tiers [--init | --check]
   dispatch run --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
-               [--background] [--no-worktree] <prompt | ->
+               [--background] [--no-worktree] [--no-verify] <prompt | ->
   dispatch run --as <subagent> [flags] <prompt | ->   (profile from agents.json)
   dispatch subagents [--init | --check]
   dispatch run --resume <id> [--background] <follow-up prompt | ->
@@ -49,14 +50,16 @@ const usageText = `usage:
   dispatch list [--status S] [--limit N]
   dispatch cancel <id>
   dispatch recover <id>   (ORPHANED worktree; commits preserved changes)
-  dispatch merge <id>
+  dispatch verify <id>
+  dispatch verify --init  (write .dispatch/verify.json if missing)
+  dispatch merge <id> [--force]
   dispatch clean <id> [--force]
   dispatch skill install [--agent claude,codex,cursor,grok,antigravity|all] [--force]
   dispatch skill show
   dispatch skill refresh   (rewrite already-installed skill copies)
-  dispatch result <id> [--section output|meta|attempts] [--offset N] [--limit N]
+  dispatch result <id> [--section output|meta|attempts|verification] [--offset N] [--limit N]
 
-state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json`
+state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json, baselines/`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -92,6 +95,8 @@ func main() {
 		os.Exit(cancel(args))
 	case "recover":
 		os.Exit(recoverCmd(args))
+	case "verify":
+		os.Exit(verifyCmd(args))
 	case "merge":
 		os.Exit(merge(args))
 	case "clean":
@@ -307,7 +312,72 @@ func view(rec store.Record) map[string]any {
 	if n := len(rec.Attempts); n > 0 {
 		v["attempts"] = n
 	}
+	if vfy := compactVerification(rec); vfy != nil {
+		v["verification"] = vfy
+	}
 	return v
+}
+
+// compactVerification is the run/wait/meta view: no tails.
+func compactVerification(rec store.Record) map[string]any {
+	if rec.Verification == "" && rec.Verify == nil {
+		return nil
+	}
+	var passed, failed int
+	var regs []string
+	var warnings []string
+	if rec.Verify != nil {
+		warnings = append([]string{}, rec.Verify.Warnings...)
+		for _, c := range rec.Verify.Checks {
+			switch c.Status {
+			case verify.CheckPassed:
+				passed++
+			case verify.CheckFailed, verify.CheckTimeout:
+				failed++
+			}
+			regs = append(regs, c.Regressions...)
+		}
+	}
+	if warnings == nil {
+		warnings = []string{}
+	}
+	if regs == nil {
+		regs = []string{}
+	}
+	if len(regs) > 10 {
+		regs = regs[:10]
+	}
+	status := rec.Verification
+	if status == "" && rec.Verify != nil {
+		status = string(rec.Verify.Status)
+	}
+	return map[string]any{
+		"status": status, "passed": passed, "failed": failed,
+		"regressions": regs, "warnings": warnings,
+	}
+}
+
+// metaView is the record without the agent output or verification tails.
+func metaView(rec store.Record) any {
+	full := rec.Verify
+	rec.Output = ""
+	rec.Verify = nil
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return rec
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return rec
+	}
+	delete(m, "verify")
+	rec.Verify = full
+	if v := compactVerification(rec); v != nil {
+		m["verification"] = v
+	} else {
+		delete(m, "verification")
+	}
+	return m
 }
 
 func exitCode(s store.Status) int {
@@ -341,6 +411,7 @@ func run(args []string) int {
 	timeout := fs.Duration("timeout", 0, "max run time (0 = none)")
 	bg := fs.Bool("background", false, "return the id immediately; use wait/result")
 	noWT := fs.Bool("no-worktree", false, "write directly in --dir instead of a git worktree")
+	noVerify := fs.Bool("no-verify", false, "skip deterministic checks after a write run")
 	resume := fs.String("resume", "", "continue the session of an earlier run id")
 	as := fs.String("as", "", "subagent profile from agents.json (explicit flags override it)")
 	execID := fs.String("exec", "", "internal: execute a pre-created run")
@@ -374,7 +445,7 @@ func run(args []string) int {
 	}
 	opts := runner.Options{
 		Tier: adapter.Tier(*tier), Prompt: prompt, Dir: *dir, ReadOnly: *ro,
-		Timeout: *timeout, NoWorktree: *noWT, Resume: *resume,
+		Timeout: *timeout, NoWorktree: *noWT, NoVerify: *noVerify, Resume: *resume,
 	}
 	if *as != "" {
 		set := map[string]bool{}
@@ -535,6 +606,7 @@ func recoverCmd(args []string) int {
 
 func merge(args []string) int {
 	fs := flag.NewFlagSet("merge", flag.ExitOnError)
+	force := fs.Bool("force", false, "merge even when verification failed")
 	pos := parseInterspersed(fs, args)
 	if len(pos) != 1 {
 		fatalUsage("merge needs one run id")
@@ -549,6 +621,9 @@ func merge(args []string) int {
 	if rec.Status != store.Completed {
 		fatal(fmt.Errorf("run %s is %s; only COMPLETED runs can be merged", rec.ID, rec.Status))
 	}
+	if err := mergeRefusal(rec, *force); err != nil {
+		fatal(err)
+	}
 	out, err := worktree.Merge(rec.Repo, rec.Branch, rec.ID)
 	if err != nil {
 		fatal(err)
@@ -557,8 +632,133 @@ func merge(args []string) int {
 	if err := worktree.Remove(rec.Repo, rec.Worktree, rec.Branch, false); err != nil {
 		cleaned = false
 	}
-	printJSON(map[string]any{"id": rec.ID, "merged": rec.Branch, "git": out, "cleaned": cleaned})
+	body := map[string]any{"id": rec.ID, "merged": rec.Branch, "git": out, "cleaned": cleaned}
+	if note := mergeNote(rec, *force); note != "" {
+		body["note"] = note
+	}
+	printJSON(body)
 	return 0
+}
+
+func mergeRefusal(rec store.Record, force bool) error {
+	if force || rec.Verification != string(verify.StatusFailed) {
+		return nil
+	}
+	regs := regressionLines(rec, 20)
+	msg := fmt.Sprintf("run %s failed verification", rec.ID)
+	if len(regs) > 0 {
+		msg += ": " + strings.Join(regs, ", ")
+	}
+	return fmt.Errorf("%s; use --force to merge anyway", msg)
+}
+
+func mergeNote(rec store.Record, forced bool) string {
+	if rec.Verification == string(verify.StatusFailed) && forced {
+		regs := regressionLines(rec, 20)
+		if len(regs) == 0 {
+			return "merged despite verification_failed"
+		}
+		return "merged despite verification_failed: " + strings.Join(regs, ", ")
+	}
+	switch rec.Verification {
+	case "":
+		return "run was not verified"
+	case string(verify.StatusUnverified):
+		return "verification skipped; nothing to verify"
+	case string(verify.StatusError):
+		return "verifier error; merge was not blocked"
+	default:
+		return ""
+	}
+}
+
+func regressionLines(rec store.Record, limit int) []string {
+	if rec.Verify == nil {
+		return nil
+	}
+	var out []string
+	for _, c := range rec.Verify.Checks {
+		out = append(out, c.Regressions...)
+		if limit > 0 && len(out) >= limit {
+			return out[:limit]
+		}
+	}
+	return out
+}
+
+func verifyCmd(args []string) int {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	init := fs.Bool("init", false, "write an example .dispatch/verify.json in the current repo")
+	pos := parseInterspersed(fs, args)
+	if *init {
+		if len(pos) > 0 {
+			fatalUsage("verify --init does not take a run id")
+		}
+		dir, err := os.Getwd()
+		if err != nil {
+			fatal(err)
+		}
+		if root := worktree.Root(dir); root != "" {
+			dir = root
+		}
+		path := verify.ConfigPath(dir)
+		if _, err := os.Stat(path); err == nil {
+			fatal(fmt.Errorf("%s already exists", path))
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(verify.Example), 0o644); err != nil {
+			fatal(err)
+		}
+		fmt.Println("wrote", path)
+		return 0
+	}
+	if len(pos) != 1 {
+		fatalUsage("verify needs one run id")
+	}
+	rec, err := runsStore().Get(pos[0])
+	if err != nil {
+		fatal(err)
+	}
+	if rec.Worktree == "" {
+		fatal(fmt.Errorf("run %s has no worktree", rec.ID))
+	}
+	if info, err := os.Stat(rec.Worktree); err != nil || !info.IsDir() {
+		fatal(fmt.Errorf("worktree %s does not exist", rec.Worktree))
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	res, err := verify.Run(ctx, verify.Options{
+		Repo: rec.Repo, Worktree: rec.Worktree, BaseSHA: rec.BaseSHA,
+	})
+	rec.Verify = &res
+	rec.Verification = string(res.Status)
+	rec.VerifyMs = res.DurationMs
+	if rec.Status == store.Completed || rec.Status == store.Failed || rec.Status == store.TimedOut || rec.Status == store.Cancelled {
+		rec.ExitClass = runner.ExitClass(rec.Status, rec.Verification)
+	}
+	if err != nil {
+		rec.Note = joinNotes(rec.Note, "verification: "+err.Error())
+	}
+	if err := runsStore().Append(rec); err != nil {
+		fatal(err)
+	}
+	printJSON(map[string]any{
+		"id": rec.ID, "status": rec.Status, "exitClass": rec.ExitClass,
+		"verification": compactVerification(rec), "result": res,
+	})
+	if res.Status == verify.StatusFailed || res.Status == verify.StatusError {
+		return 1
+	}
+	return 0
+}
+
+func joinNotes(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "; " + b
 }
 
 func clean(args []string) int {
@@ -589,7 +789,7 @@ func result(args []string) int {
 		fatal(err)
 	}
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
-	section := fs.String("section", "output", "output|meta|attempts")
+	section := fs.String("section", "output", "output|meta|attempts|verification")
 	offset := fs.Int("offset", 0, "first line")
 	limit := fs.Int("limit", 200, "max lines (0 = all)")
 	pos := parseInterspersed(fs, args)
@@ -610,8 +810,21 @@ func result(args []string) int {
 	case "attempts":
 		printJSON(map[string]any{"id": rec.ID, "status": rec.Status, "attempts": rec.Attempts})
 	case "meta":
-		rec.Output = ""
-		printJSON(rec)
+		printJSON(metaView(rec))
+	case "verification":
+		payload := rec.Verify
+		if payload == nil {
+			payload = &verify.Result{Status: verify.Status(rec.Verification)}
+		}
+		b, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			fatal(err)
+		}
+		content, total, more := runner.Page(string(b)+"\n", *offset, *limit)
+		printJSON(map[string]any{
+			"id": rec.ID, "status": rec.Status, "section": "verification",
+			"offset": *offset, "limit": *limit, "totalLines": total, "hasMore": more, "content": content,
+		})
 	default:
 		fatalUsage("unknown section " + *section)
 	}
@@ -780,6 +993,9 @@ func applyProfile(o *runner.Options, name string, set map[string]bool) error {
 			return fmt.Errorf("subagent %s: invalid timeout %q", name, p.Timeout)
 		}
 		o.Timeout = d
+	}
+	if !set["no-verify"] {
+		o.NoVerify = p.NoVerify
 	}
 	if p.Instructions != "" && o.Resume == "" {
 		o.Prompt = p.Instructions + "\n\n" + o.Prompt

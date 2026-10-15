@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"dispatch/internal/sandbox"
+	"dispatch/internal/verify"
 )
 
 type Status string
@@ -35,36 +36,41 @@ type Attempt struct {
 }
 
 type Record struct {
-	ID         string    `json:"id"`
-	Status     Status    `json:"status"`
-	Tier       string    `json:"tier"`
-	Agent      string    `json:"agent,omitempty"`
-	Model      string    `json:"model,omitempty"`
-	Prompt     string    `json:"prompt"`
-	Dir        string    `json:"dir,omitempty"`
-	ReadOnly   bool      `json:"readOnly"`
-	Output     string    `json:"output,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	ExitCode   int       `json:"exitCode"`
-	Attempts   []Attempt `json:"attempts,omitempty"`
-	TimeoutSec int       `json:"timeoutSec,omitempty"`
-	NoWorktree bool      `json:"noWorktree,omitempty"`
-	Profile    string    `json:"profile,omitempty"`
-	Prefer     []string  `json:"prefer,omitempty"`
-	Avoid      []string  `json:"avoid,omitempty"`
-	StartedAt  time.Time `json:"startedAt,omitempty,omitzero"`
-	AgentPID   int       `json:"agentPid,omitempty"`
-	ProcStart  string    `json:"procStart,omitempty"`
-	BaseSHA    string    `json:"baseSHA,omitempty"`
-	PID        int       `json:"pid,omitempty"`
-	SessionID  string    `json:"sessionId,omitempty"`
-	ResumedOf  string    `json:"resumedOf,omitempty"`
-	Repo       string    `json:"repo,omitempty"`     // repo root when a worktree was made
-	Worktree   string    `json:"worktree,omitempty"` // path the agent ran in
-	Branch     string    `json:"branch,omitempty"`
-	Note       string    `json:"note,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	FinishedAt time.Time `json:"finishedAt,omitzero"`
+	ID           string         `json:"id"`
+	Status       Status         `json:"status"`
+	Tier         string         `json:"tier"`
+	Agent        string         `json:"agent,omitempty"`
+	Model        string         `json:"model,omitempty"`
+	Prompt       string         `json:"prompt"`
+	Dir          string         `json:"dir,omitempty"`
+	ReadOnly     bool           `json:"readOnly"`
+	Output       string         `json:"output,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	ExitCode     int            `json:"exitCode"`
+	Attempts     []Attempt      `json:"attempts,omitempty"`
+	TimeoutSec   int            `json:"timeoutSec,omitempty"`
+	NoWorktree   bool           `json:"noWorktree,omitempty"`
+	Profile      string         `json:"profile,omitempty"`
+	Prefer       []string       `json:"prefer,omitempty"`
+	Avoid        []string       `json:"avoid,omitempty"`
+	StartedAt    time.Time      `json:"startedAt,omitempty,omitzero"`
+	AgentPID     int            `json:"agentPid,omitempty"`
+	ProcStart    string         `json:"procStart,omitempty"`
+	BaseSHA      string         `json:"baseSHA,omitempty"`
+	PID          int            `json:"pid,omitempty"`
+	SessionID    string         `json:"sessionId,omitempty"`
+	ResumedOf    string         `json:"resumedOf,omitempty"`
+	Repo         string         `json:"repo,omitempty"`     // repo root when a worktree was made
+	Worktree     string         `json:"worktree,omitempty"` // path the agent ran in
+	Branch       string         `json:"branch,omitempty"`
+	Note         string         `json:"note,omitempty"`
+	NoVerify     bool           `json:"noVerify,omitempty"`
+	Verification string         `json:"verification,omitempty"` // verified|verification_failed|unverified|error
+	Verify       *verify.Result `json:"verify,omitempty"`
+	VerifyMs     int64          `json:"verifyMs,omitempty"`
+	ExitClass    string         `json:"exitClass,omitempty"` // ok|verify_fail|timeout|cancelled|failed
+	CreatedAt    time.Time      `json:"createdAt"`
+	FinishedAt   time.Time      `json:"finishedAt,omitzero"`
 }
 
 type Store struct{ Path string }
@@ -83,6 +89,14 @@ func (s Store) Append(r Record) error {
 	r.Note = sandbox.Redact(r.Note)
 	for i := range r.Attempts {
 		r.Attempts[i].Error = sandbox.Redact(r.Attempts[i].Error)
+	}
+	if r.Verify != nil {
+		for i := range r.Verify.Checks {
+			r.Verify.Checks[i].Tail = sandbox.Redact(r.Verify.Checks[i].Tail)
+		}
+		for i, w := range r.Verify.Warnings {
+			r.Verify.Warnings[i] = sandbox.Redact(w)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
 		return err

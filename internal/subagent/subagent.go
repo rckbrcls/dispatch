@@ -20,6 +20,7 @@ type Profile struct {
 	Prefer       []string `json:"prefer,omitempty"`
 	Avoid        []string `json:"avoid,omitempty"`
 	Timeout      string   `json:"timeout,omitempty"`
+	NoVerify     bool     `json:"noVerify,omitempty"`
 }
 
 type File struct {
