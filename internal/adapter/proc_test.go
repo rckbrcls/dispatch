@@ -103,7 +103,7 @@ func TestAgentCancellationKillsDetachedGrandchild(t *testing.T) {
 			}
 			defer syscall.Kill(pid, syscall.SIGKILL)
 			group, err := syscall.Getpgid(pid)
-			if err != nil || group == cmd.Process.Pid {
+			if err != nil || group != pid { // setsid makes it a group leader; cmd.Process would race with Start
 				t.Fatalf("grandchild did not escape group: %d %v", group, err)
 			}
 			if !timeout {
