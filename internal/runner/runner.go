@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"dispatch/internal/adapter"
+	"dispatch/internal/config"
 	"dispatch/internal/pace"
 	"dispatch/internal/router"
 	"dispatch/internal/sandbox"
@@ -51,6 +52,8 @@ type Deps struct {
 	// empty they go in <repo>/.dispatch/worktrees, which keeps them under
 	// the repo path that agent permission rules usually already cover.
 	WorktreeDir string
+	// Policy is the effective global/project routing policy.
+	Policy config.File
 }
 
 // Options describes a request. For resumes, Resume names the earlier run.
@@ -404,15 +407,15 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if o.Filters.Priority == "" {
 			o.Filters.Priority = router.PriorityBalanced
 		}
-		cands, rejected = d.selectCandidates(o)
+		cands, rejected = d.selectCandidatesWith(ctx, o)
 		cands = d.evaluate(ctx, cands, true)
-		if o.Filters.Relax {
+		if o.Filters.Relax && policyRequestReason(d.Policy, o.Filters) == "" {
 			fallback := o
 			fallback.Filters = store.Filters{Priority: o.Filters.Priority}
 			if fallback.Tier == "" {
 				fallback.Tier = adapter.TierNormal
 			}
-			extra, _ := d.selectCandidates(fallback)
+			extra, _ := d.selectCandidatesWith(ctx, fallback)
 			for _, c := range d.evaluate(ctx, extra, true) {
 				duplicate := false
 				for _, prev := range cands {

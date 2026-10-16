@@ -15,7 +15,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
 | 4 | Adapters (`doctor`, capabilities) + quota tipada **(feita)** | n/d (pode ir em paralelo à 3) | M |
 | 5c | Filtros explícitos: `--provider`, `--model`, `--effort`, `--agent` **(feita)** | 4 (capabilities) | M |
-| 5d | Allow/deny persistente de providers, modelos e agents (+ `discover` opcional) | 5c | P/M |
+| 5d | Allow/deny persistente de providers, modelos e agents (+ `discover` opcional) **(feita)** | 5c | P/M |
 | 5b | Prioridade `speed|balanced|quality` no roteador **(feita)** | 3b (dados de latência) | P/M |
 | 5 | Merge gate **(feita)** | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dispatch/internal/adapter"
+	"dispatch/internal/config"
 	"dispatch/internal/router"
 	"dispatch/internal/store"
 	"dispatch/internal/tiers"
@@ -53,6 +54,10 @@ type tiered struct {
 // particular a fixed model never competes with a different model in Rank.
 // Priority is copied onto candidates and never rejects one.
 func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
+	return d.selectCandidatesWith(context.Background(), o)
+}
+
+func (d Deps) selectCandidatesWith(ctx context.Context, o Options) ([]router.Candidate, []string) {
 	f := o.Filters
 	var entries []tiered
 	var rejected []string
@@ -65,6 +70,32 @@ func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 				entries = append(entries, te)
 			} else {
 				rejected = append(rejected, e.Agent+"/"+e.Model+": tier filter requires "+string(o.Tier))
+			}
+		}
+	}
+	// Discovery deliberately only augments normal routing and only asks the
+	// model-list endpoint already used by `tiers --check`; it never invokes a model.
+	if d.Policy.Discover && (o.Tier == "" || o.Tier == adapter.TierNormal) {
+		listed := map[string]bool{}
+		for _, e := range all {
+			listed[e.Agent+"/"+e.Model] = true
+		}
+		for _, a := range d.Adapters {
+			if !d.installed(a.Binary()) {
+				continue
+			}
+			ms, err := a.Models(ctx)
+			if err != nil {
+				continue
+			}
+			for _, m := range ms {
+				if m.ID == "" || listed[a.Name()+"/"+m.ID] {
+					continue
+				}
+				te := tiered{Entry: tiers.Entry{Agent: a.Name(), Model: m.ID, Provider: adapter.ProviderOf(a.Name(), m.ID)}, tier: adapter.TierNormal}
+				all = append(all, te)
+				entries = append(entries, te)
+				listed[a.Name()+"/"+m.ID] = true
 			}
 		}
 	}
@@ -120,6 +151,10 @@ func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 		provider := e.Provider
 		if provider == "" {
 			provider = adapter.ProviderOf(e.Agent, e.Model)
+		}
+		if reason := policyReason(d.Policy, provider, e.Model, e.Agent); reason != "" {
+			reject(reason)
+			continue
 		}
 		switch {
 		case f.Provider != "" && f.Provider != provider:
@@ -217,6 +252,8 @@ func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 		}
 		if outside {
 			c.Note = "explicit model outside tier table"
+		} else if d.Policy.Discover && !tableHas(d.Table, e.Agent, e.Model) {
+			c.Note = "discovered"
 		}
 		if slices.Contains(o.Prefer, e.Agent) {
 			c.Bias = router.PreferBias
@@ -230,6 +267,63 @@ func (d Deps) selectCandidates(o Options) ([]router.Candidate, []string) {
 		rejected = append(rejected, "no candidate matches tier/model intersection")
 	}
 	return cs, rejected
+}
+
+func tableHas(t tiers.Table, agent, model string) bool {
+	for _, es := range t.Tiers {
+		for _, e := range es {
+			if e.Agent == agent && e.Model == model {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// policyReason returns the exact persistent rule that excludes a candidate.
+func policyReason(p config.File, provider, model, agent string) string {
+	// A suffix variant is covered by a policy written for its base model.
+	if base := adapter.BaseModel(model); base != model {
+		if slices.Contains(p.Allow.Models, base) {
+			p.Allow.Models = append(p.Allow.Models, model)
+		}
+		if slices.Contains(p.Deny.Models, base) {
+			p.Deny.Models = append(p.Deny.Models, model)
+		}
+	}
+	return config.PolicyReason(p, provider, model, agent)
+}
+
+// policyRequestReason catches a requested filter that is itself outside the
+// persistent policy. In that case --relax must not silently substitute a
+// different provider/model/agent.
+func policyRequestReason(p config.File, f store.Filters) string {
+	if f.Provider != "" {
+		if r := policyReason(p, f.Provider, "", ""); r != "" && !strings.Contains(r, "models") && !strings.Contains(r, "agents") {
+			return r
+		}
+	}
+	if f.Model != "" {
+		q := p
+		q.Allow.Providers = nil
+		q.Allow.Agents = nil
+		q.Deny.Providers = nil
+		q.Deny.Agents = nil
+		if r := policyReason(q, "", f.Model, ""); r != "" {
+			return r
+		}
+	}
+	if f.Agent != "" {
+		q := p
+		q.Allow.Providers = nil
+		q.Allow.Models = nil
+		q.Deny.Providers = nil
+		q.Deny.Models = nil
+		if r := policyReason(q, "", "", f.Agent); r != "" {
+			return r
+		}
+	}
+	return ""
 }
 
 func matchesModel(model, requested string) bool {
@@ -272,15 +366,15 @@ func (d Deps) Route(ctx context.Context, o Options) (RouteReport, error) {
 	if err := validateOptions(o); err != nil {
 		return r, err
 	}
-	cs, rejected := d.selectCandidates(o)
+	cs, rejected := d.selectCandidatesWith(ctx, o)
 	r.Eliminated = rejected
-	if len(cs) == 0 && o.Filters.Relax {
+	if len(cs) == 0 && o.Filters.Relax && policyRequestReason(d.Policy, o.Filters) == "" {
 		priority := o.Filters.Priority
 		o.Filters = store.Filters{Priority: priority}
 		if o.Tier == "" {
 			o.Tier = adapter.TierNormal
 		}
-		cs, rejected = d.selectCandidates(o)
+		cs, rejected = d.selectCandidatesWith(ctx, o)
 		r.Eliminated = append(r.Eliminated, rejected...)
 		r.Note = "--relax: filters relaxed to tier routing"
 	}
