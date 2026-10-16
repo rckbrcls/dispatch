@@ -15,6 +15,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 3b | Telemetria e `dispatch stats` (uso, latência, capacidade) **(feita)** | 3 | M |
 | 4 | Adapters (`doctor`, capabilities) + quota tipada **(feita)** | n/d (pode ir em paralelo à 3) | M |
 | 5c | Filtros explícitos: `--provider`, `--model`, `--effort`, `--agent` **(feita)** | 4 (capabilities) | M |
+| 5d | Allow/deny persistente de providers, modelos e agents (+ `discover` opcional) | 5c | P/M |
 | 5b | Prioridade `speed|balanced|quality` no roteador **(feita)** | 3b (dados de latência) | P/M |
 | 5 | Merge gate **(feita)** | 2 | P |
 | 6 | Classificador logístico | 2 (rótulos) | M |
@@ -133,6 +134,15 @@ Detalhes:
 - Restrições existentes continuam valendo: modelos Claude recusados em CLIs de terceiros, cooldown, `readonly`, capabilities.
 - `dispatch route` (dry-run, sem executar) mostra candidatos, o que cada filtro eliminou e por que o vencedor ganhou; os filtros aparecem no `RunSummary` (`requested` vs `resolved`) e nas agregações do `stats`.
 - Pronto quando: um teste com 2 agents servindo o mesmo modelo escolhe o agent por pace; `--provider` troca de modelo conforme tier/prioridade; `--model` + `--effort` roda sem chamar o ranking de modelo; filtro impossível falha com mensagem e sem fallback silencioso.
+
+## Fase 5d — Allow/deny persistente
+Hoje a tabela `tiers.json` é uma lista de permissão implícita por tier e os filtros da 5c valem por run. Falta uma política persistente.
+- `config.json` (global `~/.dispatch` e por projeto `<repo>/.dispatch`, projeto vence): `allow` e `deny` com `providers`, `models`, `agents`; `discover` (padrão **false**).
+- `allow` vazio = tudo o que estiver instalado e na tabela; preenchido = só o que casar. `deny` sempre vence. Aplica antes do ranking, junto com tier e filtros da 5c.
+- Flags por run só **estreitam** dentro da política; pedir algo fora dela recusa com mensagem (nunca contorna).
+- `discover: true`: modelos que os CLIs listam e a tabela não tem entram em tier `normal` com `note`, ainda sujeitos a allow/deny.
+- `dispatch config get|set|allow|deny`, `route` e `doctor` mostram o que a política eliminou.
+- Pronto quando: com `allow.providers=[openai]` nenhum run sai para outro provider mesmo com fallback; `deny` vence `allow`; flag fora da política recusa; `discover` off por padrão.
 
 ## Fase 5b — Prioridade de roteamento (feita)
 - `--priority speed|balanced|quality` (padrão `balanced`) em `run`, e campo `priority` nos perfis de subagent; pode ter um padrão global em `~/.dispatch`.
