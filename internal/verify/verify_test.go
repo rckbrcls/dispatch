@@ -233,7 +233,7 @@ func TestCheckTimeoutKillsTree(t *testing.T) {
 	pidfile := filepath.Join(t.TempDir(), "pids")
 	t.Cleanup(func() { killPids(pidfile) })
 	g.write("hang.sh", "#!/bin/sh\nif [ -f SLOW ]; then\n  sleep 60 &\n  echo $! >> \"$1\"\n  wait\nfi\nexit 0\n", 0o755)
-	g.write(".dispatch/verify.json", fmt.Sprintf(`{"checks":[{"name":"hang","argv":["./hang.sh",%q],"timeout":"500ms","parse":"none"}]}`, pidfile), 0o644)
+	g.write(".dispatch/verify.json", fmt.Sprintf(`{"checks":[{"name":"hang","argv":["./hang.sh",%q],"timeout":"2s","parse":"none"}]}`, pidfile), 0o644)
 	base := g.commit("base")
 	g.write("SLOW", "1\n", 0o644)
 	g.commit("slow")
