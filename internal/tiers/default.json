@@ -1,21 +1,21 @@
 {
   "tiers": {
     "easy": [
-      {"agent": "cursor", "model": "composer-2.5"},
-      {"agent": "antigravity", "model": "gemini-3.8-flash-low"},
-      {"agent": "grok", "model": "grok-4.7-build-fast"},
-      {"agent": "codex", "model": "gpt-5.6-luna"}
+      {"agent": "cursor", "model": "composer-2.5", "speed": 4, "strength": 2},
+      {"agent": "antigravity", "model": "gemini-3.8-flash-low", "speed": 5, "strength": 2},
+      {"agent": "grok", "model": "grok-4.7-build-fast", "speed": 4, "strength": 2},
+      {"agent": "codex", "model": "gpt-5.6-luna", "speed": 4, "strength": 2}
     ],
     "normal": [
-      {"agent": "codex", "model": "gpt-5.6-terra"},
-      {"agent": "grok", "model": "grok-4.7"},
-      {"agent": "antigravity", "model": "gemini-3.8-flash-high"},
-      {"agent": "cursor", "model": "grok-4.7-medium"}
+      {"agent": "codex", "model": "gpt-5.6-terra", "speed": 4, "strength": 3},
+      {"agent": "grok", "model": "grok-4.7", "speed": 2, "strength": 3},
+      {"agent": "antigravity", "model": "gemini-3.8-flash-high", "speed": 3, "strength": 3},
+      {"agent": "cursor", "model": "grok-4.7-medium", "speed": 3, "strength": 3}
     ],
     "hard": [
-      {"agent": "codex", "model": "gpt-6.1-sol"},
-      {"agent": "cursor", "model": "gpt-5.6-sol-xhigh"},
-      {"agent": "grok", "model": "grok-4.7"}
+      {"agent": "codex", "model": "gpt-6.1-sol", "speed": 4, "strength": 5},
+      {"agent": "cursor", "model": "gpt-5.6-sol-xhigh", "speed": 2, "strength": 5},
+      {"agent": "grok", "model": "grok-4.7", "speed": 2, "strength": 4}
     ]
   }
 }
