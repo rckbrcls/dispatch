@@ -379,3 +379,20 @@ func TestSettingsPathAndDispatchHome(t *testing.T) {
 		t.Fatalf("unexpected dispatch home: %s", dh)
 	}
 }
+
+func TestHookCommandQuotesUnsafePaths(t *testing.T) {
+	cases := map[string]string{
+		"/home/u/.local/bin/dispatch": "/home/u/.local/bin/dispatch context --hook",
+		"/Users/a b/bin/dispatch":     "'/Users/a b/bin/dispatch' context --hook",
+		"/tmp/it's/dispatch":          `'/tmp/it'\''s/dispatch' context --hook`,
+	}
+	for in, want := range cases {
+		got := HookCommand(in)
+		if got != want {
+			t.Errorf("HookCommand(%q) = %q, want %q", in, got, want)
+		}
+		if !IsHookCommand(got) {
+			t.Errorf("%q not recognized as hook command", got)
+		}
+	}
+}

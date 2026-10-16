@@ -23,8 +23,8 @@ Escolha o menor tier que dá conta; suba só se o resultado pedir.
 | `hard` | arquitetura, código sensível (auth, dinheiro, permissões, dados), bug difícil |
 
 Código sensível sobe um tier automaticamente.
-`dispatch classify "<prompt>" [--tier normal] [--explain] [--json]` estima risco local, sem LLM/rede; `--reset` restaura o prior.
-Sugestões aprendidas só geram aviso em `note`; treino por tier usa verificação atribuível (mínimo 5 amostras), sem guardar prompts no modelo.
+`dispatch classify "<prompt>" [--tier normal] [--explain]` estima risco local, sem LLM/rede.
+Sugestões aprendidas só geram aviso em `note`.
 
 ## Receita
 
@@ -58,18 +58,11 @@ depois um `wait` por id. Duas escritas no mesmo `--dir` com `--no-worktree` conf
 `durationMs`, arquivos e +/-, `verification` (só o status), `attempts`, `branch`, `worktree` e ponteiros
 em `details`. O texto livre do agente não vem nesse JSON. `--json=false` imprime 3 linhas; o padrão é o JSON.
 
-- `attempts` > 1: houve **fallback**. Erros em `--section attempts`. Rate limit gera **cooldown de 1h**.
+- `attempts` > 1: houve **fallback** (erros em `--section attempts`); rate limit gera **cooldown de 1h**.
 - `note`: checkout sujo, worktree perdido, commit falho, "no file changes".
-- `verification`: `verified` (sem regressão nova), `verification_failed`, `unverified` (não é um passe) ou `error`.
+- `verification`: `verified`, `verification_failed`, `unverified` (não é um passe) ou `error`.
 
-```bash
-dispatch result <id> --section summary
-dispatch result <id> --section agent --offset 0 --limit 100
-dispatch result <id> --section verification
-dispatch result <id> --section files
-dispatch result <id> --section attempts
-dispatch result <id> --section meta
-```
+Mais detalhes: `dispatch result <id> --section summary|agent|verification|files|attempts|meta [--offset N --limit N]`.
 
 Exit code: 0 ok, 124 timeout, 1 demais falhas (`wait`: 3 se ainda rodando).
 
@@ -79,8 +72,9 @@ Exit code: 0 ok, 124 timeout, 1 demais falhas (`wait`: 3 se ainda rodando).
 dispatch run --resume <id> --background - <<< "ajuste X"  # mesma sessão, agente, modelo e worktree
 dispatch list [--status RUNNING] [--limit N]               # histórico
 dispatch cancel <id>                                        # cancela run em andamento
-dispatch recover <id>                                      # ORPHANED: commita trabalho preservado, sem verificação
+dispatch recover <id>                                      # ORPHANED: commita trabalho preservado, sem verificação (o dispatch nunca limpa órfãos sozinho)
 dispatch verify <id>                                       # re-roda os checks (ex.: depois de recover)
+dispatch verify --init                                     # cria .dispatch/verify.json do projeto se não existir
 dispatch clean <id> [--force]                               # descarta o worktree
 ```
 
@@ -99,16 +93,13 @@ dispatch run --as reviewer --dir <repo> --background - <<< "revise o branch X"
 Flags explícitas (`--tier`, `--readonly`, `--timeout`) vencem o perfil. `prefer`/`avoid` são **pesos**
 no ranking, não filtros: um agente evitado ainda roda se for o único com folga.
 
-`run` e perfis aceitam `--provider`, `--model`, `--effort low|medium|high|xhigh`, `--agent` (flags vencem o perfil).
-Cada filtro restringe o fallback; sem candidato, falha. `--relax` permite voltar ao tier e registra `note`.
-Tier é opcional com provider/model; se informado, vale a interseção. Effort incompatível é recusado.
-`dispatch route [mesmos filtros] [--json]` explica candidatos/eliminações/vencedor usando quota em cache, sem executar.
-O resumo expõe `requested`/`resolved`; `stats --by requested|resolved` agrega esses campos.
-`--priority speed|balanced|quality` (padrão `balanced`; a flag vence o `priority` do perfil e o de `~/.dispatch/config.json`) só muda pesos dentro do conjunto elegível.
-`speed` pondera p50 e folga de pace; `quality` pondera sucesso `verification=verified` e `strength`. Não fura tier, filtro, capability, cooldown nem readonly.
-`tiers.json` aceita `speed` e `strength` (1–5; ausente = neutro). Com ≥5 amostras no mesmo tier a medição mistura com o prior (`n/(n+5)`); `route` mostra os termos e se o vencedor mudou.
-`config.json` global e do projeto aplicam `allow`/`deny` persistentes antes do ranking; deny vence e `--relax` não os contorna.
-Use `dispatch config get|set|allow|deny`; `discover: true` inclui modelos listados pelos CLIs como candidatos normais com nota `discovered`.
+## Filtros e roteamento (opcional; o padrão é só `--tier`)
+
+`run`/perfis aceitam `--provider`, `--model`, `--effort low|medium|high|xhigh`, `--agent`, `--priority speed|balanced|quality`.
+Cada filtro restringe candidatos e fallback; sem candidato, falha (`--relax` volta ao tier, com `note`).
+Tier é opcional com provider/model. Effort incompatível é recusado. A prioridade só muda pesos, nunca fura filtro, cooldown ou readonly.
+`dispatch route [mesmos filtros] [--json]` mostra candidatos, eliminações e vencedor sem executar.
+`dispatch config get|set|allow|deny [--project]` mantém a política persistente (allow/deny de providers, modelos e agents; deny vence; `--relax` não contorna). `speed`/`strength` em `tiers.json` são priors; a medição os substitui com ≥5 amostras por tier.
 
 ## Flags úteis
 
@@ -132,9 +123,7 @@ Use `dispatch config get|set|allow|deny`; `discover: true` inclui modelos listad
 ## Diagnóstico
 
 ```bash
-dispatch status          # status do dispatch (on/off), hook e skill
-dispatch on / off        # liga/desliga injeção de contexto em novas sessões
-dispatch hook install / uninstall # registra/remove hook SessionStart do Claude
+dispatch status          # on/off, hook e skill (`on`/`off` liga ou desliga o contexto em novas sessões)
 dispatch agents          # CLIs instalados, com fonte e confiança da quota
 dispatch doctor [--json] # versão, flags e capabilities (OK, DEGRADED, UNVERIFIED); não chama modelo
 dispatch tiers           # tabela efetiva (edite ~/.dispatch/tiers.json após `dispatch tiers --init`)

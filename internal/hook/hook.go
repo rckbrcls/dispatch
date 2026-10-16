@@ -93,7 +93,16 @@ func HookCommand(binaryPath string) string {
 	if strings.HasSuffix(binaryPath, HookSuffix) {
 		return binaryPath
 	}
-	return binaryPath + HookSuffix
+	return shellQuote(binaryPath) + HookSuffix
+}
+
+// shellQuote single-quotes p only when it has characters a shell would split
+// or expand, so ordinary paths stay readable and old hook entries still match.
+func shellQuote(p string) string {
+	if p != "" && !strings.ContainsAny(p, " \t\n\"'`$&;|<>()*?[]{}!\\#~") {
+		return p
+	}
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
 
 // IsHookCommand reports whether cmd is recognized as our session hook command.

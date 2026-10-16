@@ -102,7 +102,7 @@ se eta >= (resetsAt - agora): dura até o reset; senão: "acaba em eta"
 
 ## Estado atual (implementado)
 
-Comandos: `agents`, `tiers [--init|--check]`, `run` (`--tier`, `--dir`, `--readonly`, `--timeout`, `--background`, `--resume`, `--no-worktree`), `wait`, `list`, `cancel`, `result`, `merge`, `clean`, `skill install|show`.
+Comandos (ver `dispatch` sem argumentos): `agents`, `doctor`, `tiers [--init|--check]`, `config`, `route`, `classify`, `run`, `wait`, `list`, `cancel`, `recover`, `verify`, `merge`, `clean`, `result`, `stats`, `subagents`, `on|off|status`, `hook`, `skill install|show|refresh`, `update`, `version`. Detalhes de cada um na seção "Evoluções" abaixo.
 
 | Agente | Run | Quota | Resume |
 |---|---|---|---|
@@ -138,3 +138,19 @@ Comandos: `agents`, `tiers [--init|--check]`, `run` (`--tier`, `--dir`, `--reado
 - `dispatch run --as <nome>`: perfil preenche tier/readonly/timeout (flags explícitas vencem) e prefixa `instructions` ao prompt (não em `--resume`). `prefer`/`avoid` viram `Bias` no score do roteador (−50 / +1500): peso, não filtro. Gravados no Record para o `--background` re-executar igual.
 - `dispatch subagents [--init|--check]`: lista, cria exemplo, valida (tier, timeout, agentes conhecidos/instalados).
 
+## Evoluções (fases 0–6, todas entregues)
+- **Segurança:** ambiente do agente por allowlist (`DISPATCH_ENV_ALLOW`), guarda de recursão (`DISPATCH_DEPTH`), redação de segredos em logs e no store; nunca lê credenciais de agentes.
+- **`on/off` + hook:** `dispatch on` registra um hook SessionStart no `~/.claude/settings.json` que cita a skill `dispatch` (uma linha de contexto); `off` remove. Caminhos com espaço são citados no comando do hook.
+- **Lifecycle:** grupos de processo + kill da árvore de descendentes, status `ORPHANED` (identidade PID + início do processo), `cancel` SIGTERM→SIGKILL, `recover`. O dispatch nunca limpa órfãos sozinho.
+- **Verificador:** `.dispatch/verify.json` (`verify --init`) ou autodescoberta Go (`go vet`, `go test -json`); baseline lazy no `BaseSHA` com cache; checks baratos (diff --check, marcadores de conflito, testes removidos, workflow/lockfile). Status em `verification`: `verified|verification_failed|unverified|error`; `merge` recusa `verification_failed` sem `--force`.
+- **RunSummary v1** (`dispatch.run-summary.v1`): `run`/`wait` imprimem JSON compacto; texto do agente só em `result --section agent`. Telemetria por run: provider, effort, queuedMs/runMs/verifyMs, arquivos/+/-, `exitClass`, duração por attempt; `runs.jsonl` rotaciona com gzip.
+- **`stats`:** `--by model|agent|provider|tier|effort|day|week|requested|resolved`, `--since`, `--json`, `--capacity` (snapshots de quota); mínimo de amostras antes de rankear; desconhecido é explícito.
+- **`doctor` e quota tipada:** `Probe()` por adapter (versão e flags via `--help`, nunca chama modelo) com `OK|DEGRADED|UNVERIFIED`; `DEGRADED` ainda roda com `note`. Quota com fonte e confiança (`official` para codex e agy; `empirical` para cursor e grok, sem percentual inventado).
+- **Merge gate:** `git merge-tree --write-tree` antes de integrar (conflito recusa sem tocar working tree, `merge_conflict`), lock por repo+branch, recusa com mudanças locais nos mesmos arquivos, reverificação pós-merge (`post_merge_verification`, sugere `git revert -m 1`), `--no-verify`.
+- **Filtros:** `--provider/--model/--effort/--agent/--relax`; filtro restringe, o roteador decide o resto; fallback respeita o filtro; `route` é o dry-run explicativo; `requested`/`resolved` no resumo.
+- **Prioridade:** `--priority speed|balanced|quality` só muda pesos; priors `speed`/`strength` (1–5) no `tiers.json` padrão, substituídos por medição com ≥5 amostras por tier (mistura n/(n+5)).
+- **Política persistente:** `config.json` (global e `<repo>/.dispatch`) com `allow`/`deny` de providers, modelos e agents (deny vence; `--relax` não contorna), `discover` (padrão false), `priority`.
+- **Classificador:** regressão logística própria (24 features, SGD + L2, por tier), prior por regras (reproduz "código sensível sobe um tier"), `classifier.json` versionado só com pesos, rótulo = verificador (exclui falhas não atribuíveis), sugestões aprendidas só viram `note`. Sem LLM e sem rede.
+
+## Descartado / adiado (decisão do dono)
+Não serão feitos por ora: cascata repair/escalate, scope leases, Thompson sampling, perfis de sandbox, `dispatch bench`, previsão de duração, LLM-juiz, export OTel, `ACPAdapter`, classificador via LLM (Jev). Reabrir só com uso real que justifique.
