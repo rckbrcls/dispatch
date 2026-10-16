@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dispatch/internal/adapter"
+	"dispatch/internal/config"
 	"dispatch/internal/pace"
 	"dispatch/internal/router"
 	"dispatch/internal/store"
@@ -23,6 +24,7 @@ type routingFake struct {
 	quota    adapter.Quota
 	requests *[]adapter.Request
 	calls    *int
+	models   []adapter.Model
 }
 
 func (f routingFake) Capabilities() adapter.Capabilities { return f.caps }
@@ -35,6 +37,7 @@ func (f routingFake) Quota(context.Context) (adapter.Quota, error) {
 	}
 	return f.quota, nil
 }
+func (f routingFake) Models(context.Context) ([]adapter.Model, error) { return f.models, nil }
 func (f routingFake) Run(ctx context.Context, r adapter.Request, m string) (adapter.Result, error) {
 	if f.requests != nil {
 		*f.requests = append(*f.requests, r)
@@ -374,5 +377,40 @@ func TestRelaxAfterFilteredCandidatesFail(t *testing.T) {
 	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Filters: store.Filters{Agent: "a", Relax: true}, Prompt: "p", NoWorktree: true})
 	if err != nil || rec.Status != store.Completed || rec.Agent != "b" || !strings.Contains(rec.Note, "--relax") || len(*ran) != 3 {
 		t.Fatal(rec, err, *ran)
+	}
+}
+
+func TestPersistentPolicyAppliesToFallbackRelaxAndFlags(t *testing.T) {
+	d, ran, _ := routingDeps(t)
+	d.Policy.Allow.Providers = []string{"openai"}
+	d.Policy.Deny.Models = []string{"gpt-small"}
+	rec, _ := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Filters: store.Filters{Relax: true}, Prompt: "p", NoWorktree: true})
+	if rec.Status != store.Failed || len(*ran) != 0 || !strings.Contains(rec.Error, "policy deny.models") {
+		t.Fatalf("%+v %v", rec, *ran)
+	}
+	d.Policy.Deny = config.Rules{}
+	cs, why := d.selectCandidates(Options{Tier: adapter.TierEasy, Filters: store.Filters{Provider: "google", Relax: true}})
+	if len(cs) != 0 || !strings.Contains(strings.Join(why, ";"), "policy allow.providers") {
+		t.Fatalf("%v %v", cs, why)
+	}
+	rec, _ = d.Run(context.Background(), Options{Tier: adapter.TierEasy, Filters: store.Filters{Provider: "google", Relax: true}, Prompt: "p", NoWorktree: true})
+	if rec.Status != store.Failed || !strings.Contains(rec.Error, "policy allow.providers") {
+		t.Fatalf("%+v", rec)
+	}
+}
+
+func TestDiscoverAddsNormalCandidateOnlyWhenEnabled(t *testing.T) {
+	d, _, _ := routingDeps(t)
+	a := d.Adapters[0].(routingFake)
+	a.models = []adapter.Model{{ID: "gpt-discovered"}}
+	d.Adapters[0] = a
+	cs, _ := d.selectCandidatesWith(context.Background(), Options{Tier: adapter.TierNormal})
+	if len(cs) != 0 {
+		t.Fatal("discover default must be off", cs)
+	}
+	d.Policy.Discover = true
+	cs, why := d.selectCandidatesWith(context.Background(), Options{Tier: adapter.TierNormal})
+	if len(cs) != 1 || cs[0].Model != "gpt-discovered" || cs[0].Note != "discovered" {
+		t.Fatal(cs, why)
 	}
 }

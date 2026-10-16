@@ -543,6 +543,36 @@ func TestPriorityProfileFlagAndConfig(t *testing.T) {
 	}
 }
 
+func TestConfigCommandsPreserveUnknownAndEditPolicy(t *testing.T) {
+	h, _ := setupTestEnv(t)
+	if err := os.MkdirAll(h, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(h, "config.json")
+	if err := os.WriteFile(p, []byte(`{"future":42}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := configCmd([]string{"set", "priority", "quality"}); code != 0 {
+		t.Fatal(code)
+	}
+	if code := configCmd([]string{"allow", "add", "providers", "openai", "google"}); code != 0 {
+		t.Fatal(code)
+	}
+	if code := configCmd([]string{"deny", "add", "agents", "cursor"}); code != 0 {
+		t.Fatal(code)
+	}
+	if code := configCmd([]string{"allow", "rm", "providers", "google"}); code != 0 {
+		t.Fatal(code)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"future": 42`)) || !bytes.Contains(b, []byte(`"openai"`)) || bytes.Contains(b, []byte(`"google"`)) || !bytes.Contains(b, []byte(`"cursor"`)) {
+		t.Fatalf("%s", b)
+	}
+}
+
 func TestRouteCommandDoesNotRunCLIsOrWriteState(t *testing.T) {
 	h, _ := setupTestEnv(t)
 	dir := t.TempDir()

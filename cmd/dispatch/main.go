@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -45,6 +46,9 @@ const usageText = `usage:
   dispatch agents [--json]
   dispatch doctor [--json]
   dispatch tiers [--init | --check]
+  dispatch config get [priority|discover|allow|deny]
+  dispatch config set priority|discover <value> [--project]
+  dispatch config allow|deny add|rm providers|models|agents <value...> [--project]
   dispatch route [--tier T] [--provider P] [--model M] [--effort E] [--agent A] [--priority speed|balanced|quality] [--relax] [--json]
   dispatch run [--provider P] [--model M] [--effort E] [--agent A] [--priority speed|balanced|quality] [--relax] --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
                [--background] [--no-worktree] [--no-verify] [--json] <prompt | ->
@@ -91,6 +95,8 @@ func main() {
 		os.Exit(subagentsCmd(args))
 	case "tiers":
 		tiersCmd(args)
+	case "config":
+		os.Exit(configCmd(args))
 	case "route":
 		os.Exit(runCommand(args, true))
 	case "run":
@@ -394,6 +400,26 @@ func checkTiers(t tiers.Table) int {
 	}
 	models := map[string]map[string]bool{}
 	problems := append(t.FieldProblems(), t.CapabilityProblems(adapter.Known())...)
+	if p, err := config.LoadAll(config.Path(home()), filepath.Join(mustWD(), ".dispatch", "config.json")); err != nil {
+		problems = append(problems, err.Error())
+	} else {
+		for tier, entries := range t.Tiers {
+			allowed := false
+			for _, e := range entries {
+				provider := e.Provider
+				if provider == "" {
+					provider = adapter.ProviderOf(e.Agent, e.Model)
+				}
+				if config.PolicyReason(p, provider, e.Model, e.Agent) == "" {
+					allowed = true
+					break
+				}
+			}
+			if !allowed && len(entries) > 0 {
+				problems = append(problems, fmt.Sprintf("%s: policy eliminates entire tier (no candidate)", tier))
+			}
+		}
+	}
 	for tier, entries := range t.Tiers {
 		for _, e := range entries {
 			a, ok := known[e.Agent]
@@ -458,14 +484,178 @@ func parseInterspersed(fs *flag.FlagSet, args []string) []string {
 	}
 }
 
-func deps() runner.Deps {
+func deps() runner.Deps { return depsFor("") }
+
+func depsFor(dir string) runner.Deps {
 	table, err := tiers.Load(tiersPath())
+	if err != nil {
+		fatal(err)
+	}
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	policy, err := config.LoadAll(config.Path(home()), filepath.Join(dir, ".dispatch", "config.json"))
 	if err != nil {
 		fatal(err)
 	}
 	return runner.Deps{
 		Adapters: adapter.Known(), Table: table, Store: runsStore(), Now: time.Now,
+		Policy: policy,
 	}
+}
+
+func configPath(project bool) string {
+	if !project {
+		return config.Path(home())
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		fatal(err)
+	}
+	return filepath.Join(dir, ".dispatch", "config.json")
+}
+
+func configCmd(args []string) int {
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	project := fs.Bool("project", false, "read/write <repo>/.dispatch/config.json")
+	var clean []string
+	for _, v := range args {
+		if v == "--project" {
+			*project = true
+		} else {
+			clean = append(clean, v)
+		}
+	}
+	if err := fs.Parse(clean); err != nil {
+		return 2
+	}
+	a := fs.Args()
+	if len(a) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: dispatch config get|set|allow|deny ...")
+		return 2
+	}
+	path := configPath(*project)
+	if a[0] == "get" {
+		var f config.File
+		var err error
+		if *project {
+			f, err = config.Load(path)
+		} else {
+			f, err = config.LoadAll(config.Path(home()), filepath.Join(mustWD(), ".dispatch", "config.json"))
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "dispatch:", err)
+			return 1
+		}
+		if len(a) == 1 {
+			printJSON(f)
+			return 0
+		}
+		switch a[1] {
+		case "priority":
+			fmt.Println(f.Priority)
+		case "discover":
+			fmt.Println(f.Discover)
+		case "allow":
+			printJSON(f.Allow)
+		case "deny":
+			printJSON(f.Deny)
+		default:
+			fmt.Fprintln(os.Stderr, "dispatch: unknown config key", a[1])
+			return 2
+		}
+		return 0
+	}
+	f, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "dispatch:", err)
+		return 1
+	}
+	switch a[0] {
+	case "set":
+		if len(a) != 3 {
+			return configUsage()
+		}
+		switch a[1] {
+		case "priority":
+			f.Priority = a[2]
+		case "discover":
+			if a[2] != "true" && a[2] != "false" {
+				fmt.Fprintln(os.Stderr, "dispatch: discover must be true or false")
+				return 2
+			}
+			f.Discover = a[2] == "true"
+		default:
+			return configUsage()
+		}
+		if _, err := validateConfig(f); err != nil {
+			fmt.Fprintln(os.Stderr, "dispatch:", err)
+			return 1
+		}
+	case "allow", "deny":
+		if len(a) < 4 || (a[1] != "add" && a[1] != "rm") {
+			return configUsage()
+		}
+		r := &f.Allow
+		if a[0] == "deny" {
+			r = &f.Deny
+		}
+		var dst *[]string
+		switch a[2] {
+		case "providers":
+			dst = &r.Providers
+		case "models":
+			dst = &r.Models
+		case "agents":
+			dst = &r.Agents
+		default:
+			return configUsage()
+		}
+		for _, v := range a[3:] {
+			if a[1] == "add" {
+				if !slices.Contains(*dst, v) {
+					*dst = append(*dst, v)
+				}
+			} else {
+				*dst = slices.DeleteFunc(*dst, func(x string) bool { return x == v })
+			}
+		}
+	default:
+		return configUsage()
+	}
+	key := a[0]
+	var value any
+	if key == "set" {
+		key = a[1]
+		if key == "priority" {
+			value = f.Priority
+		} else {
+			value = f.Discover
+		}
+	} else if key == "allow" {
+		value = f.Allow
+	} else {
+		value = f.Deny
+	}
+	if err := config.WriteKey(path, key, value); err != nil {
+		fmt.Fprintln(os.Stderr, "dispatch:", err)
+		return 1
+	}
+	return 0
+}
+
+func mustWD() string {
+	d, err := os.Getwd()
+	if err != nil {
+		fatal(err)
+	}
+	return d
+}
+func validateConfig(f config.File) (config.File, error) { return f, config.Validate(f) }
+func configUsage() int {
+	fmt.Fprintln(os.Stderr, "usage: dispatch config set priority|discover <value> | config allow|deny add|rm providers|models|agents <value...>")
+	return 2
 }
 
 func view(rec store.Record) map[string]any {
@@ -647,11 +837,20 @@ func runCommand(args []string, dry bool) int {
 			fatal(err)
 		}
 	}
-	resolvedPriority, err := resolveRoutingPriority(home(), opts.Filters.Priority, set["priority"])
+	projectConfig := filepath.Join(mustWD(), ".dispatch", "config.json")
+	if opts.Dir != "" {
+		projectConfig = filepath.Join(opts.Dir, ".dispatch", "config.json")
+	}
+	resolvedPriority, err := resolveRoutingPriority(home(), opts.Filters.Priority, set["priority"], projectConfig)
 	if err != nil {
 		fatal(err)
 	}
 	opts.Filters.Priority = resolvedPriority
+	policy, err := config.LoadAll(config.Path(home()), projectConfig)
+	if err != nil {
+		fatal(err)
+	}
+	d.Policy = policy
 
 	if opts.Tier == "" && opts.Filters.Model == "" && opts.Filters.Provider == "" {
 		opts.Tier = adapter.TierNormal
@@ -1343,10 +1542,14 @@ func updateCmd(args []string) int {
 
 // resolveRoutingPriority applies an explicit flag, else the current value
 // (usually a subagent profile), else ~/.dispatch/config.json, else balanced.
-func resolveRoutingPriority(dispatchHome, current string, explicit bool) (string, error) {
+func resolveRoutingPriority(dispatchHome, current string, explicit bool, project ...string) (string, error) {
 	p := current
 	if !explicit && p == "" {
-		cfg, err := config.Load(config.Path(dispatchHome))
+		projectPath := ""
+		if len(project) > 0 {
+			projectPath = project[0]
+		}
+		cfg, err := config.LoadAll(config.Path(dispatchHome), projectPath)
 		if err != nil {
 			return "", err
 		}
