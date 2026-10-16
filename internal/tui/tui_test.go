@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"dispatch/internal/adapter"
 	"dispatch/internal/store"
 	"dispatch/internal/subagent"
 	"dispatch/internal/tiers"
@@ -367,5 +368,41 @@ func TestBatchedKeysAreReplayed(t *testing.T) {
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("jjj")})
 	if m.setRow != 3 {
 		t.Fatalf("row = %d, want 3", m.setRow)
+	}
+}
+
+func TestSettingsAgentsTabRegistersBinary(t *testing.T) {
+	m, dir := settingsModel(t)
+	t.Setenv("PATH", t.TempDir())
+	t.Cleanup(func() { adapter.SetBinaries(nil) })
+	bin := filepath.Join(dir, "opencode-cli")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m.setTab = tabAgents
+	for i, a := range adapter.Known() {
+		if a.Name() == "opencode" {
+			m.setRow = i
+		}
+	}
+	press(m, "b")
+	typeText(m, "relative/nope")
+	if !strings.HasPrefix(m.setMsg, "!") {
+		t.Fatalf("invalid path accepted: %q", m.setMsg)
+	}
+	press(m, "b")
+	m.prompt.val = []rune(bin)
+	press(m, "enter")
+	cfg, _ := os.ReadFile(filepath.Join(dir, "config.json"))
+	if !strings.Contains(string(cfg), bin) || adapter.Bin("opencode") != bin {
+		t.Fatalf("%s / %s", cfg, adapter.Bin("opencode"))
+	}
+	m.renderSettings()
+	if v := m.settingsView(); !strings.Contains(v, "configured") {
+		t.Fatal(v)
+	}
+	press(m, "x")
+	if adapter.Bin("opencode") != "opencode" {
+		t.Fatal("override not cleared")
 	}
 }

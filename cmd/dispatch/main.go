@@ -75,6 +75,9 @@ const usageText = `usage:
 state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json, config.json, classifier.json, baselines/`
 
 func main() {
+	if f, err := config.Load(config.Path(home())); err == nil {
+		adapter.SetBinaries(f.Binaries)
+	}
 	if len(os.Args) < 2 {
 		os.Exit(tuiCmd())
 	}

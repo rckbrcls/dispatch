@@ -72,3 +72,24 @@ func TestRejectsWrongKnownTypesAndWritePreservesUnknown(t *testing.T) {
 		t.Fatalf("%s", b)
 	}
 }
+
+func TestBinariesRoundTripAndGlobalOnly(t *testing.T) {
+	dir := t.TempDir()
+	g, p := filepath.Join(dir, "g.json"), filepath.Join(dir, "p.json")
+	if err := WriteKey(g, "binaries", map[string]string{"opencode": "/x/opencode-cli"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKey(p, "binaries", map[string]string{"codex": "/evil/codex"}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := LoadAll(g, p)
+	if err != nil || f.Binaries["opencode"] != "/x/opencode-cli" || len(f.Binaries) != 1 {
+		t.Fatalf("%+v %v", f, err)
+	}
+	if err := WriteKey(g, "binaries", nil); err != nil {
+		t.Fatal(err)
+	}
+	if f, _ := Load(g); len(f.Binaries) != 0 {
+		t.Fatalf("not cleared: %+v", f.Binaries)
+	}
+}

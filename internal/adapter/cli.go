@@ -35,11 +35,11 @@ type cliAdapter struct {
 }
 
 func (c cliAdapter) Name() string               { return c.name }
-func (c cliAdapter) Binary() string             { return c.binary }
+func (c cliAdapter) Binary() string             { return Bin(c.name) }
 func (c cliAdapter) Capabilities() Capabilities { return c.caps }
 
 func (c cliAdapter) Probe(ctx context.Context) ProbeReport {
-	return probeBinary(ctx, c.name, c.binary, c.caps, c.flags)
+	return probeBinary(ctx, c.name, c.Binary(), c.caps, c.flags)
 }
 
 func (c cliAdapter) Resume(ctx context.Context, req Request, model string) (Result, error) {
@@ -56,7 +56,7 @@ func (c cliAdapter) Quota(context.Context) (Quota, error) { return Quota{}, ErrN
 var claudeModel = regexp.MustCompile(`(?i)claude|sonnet|opus|haiku|fable`)
 
 func (c cliAdapter) Models(ctx context.Context) ([]Model, error) {
-	cmd := exec.CommandContext(ctx, c.binary, c.listArgs...)
+	cmd := exec.CommandContext(ctx, c.Binary(), c.listArgs...)
 	cmd.Env = sandbox.Environ()
 	out, err := cmd.Output()
 	if err != nil {
@@ -87,7 +87,7 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 			return Result{}, fmt.Errorf("%s: new session: %w", c.name, err)
 		}
 	}
-	cmd := exec.CommandContext(ctx, c.binary, c.args(req, model, session, resume)...)
+	cmd := exec.CommandContext(ctx, c.Binary(), c.args(req, model, session, resume)...)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
 	} else {
@@ -184,6 +184,47 @@ func parseGrokModels(out string) []string {
 		}
 		if f := strings.Fields(l[2:]); len(f) > 0 {
 			ids = append(ids, f[0])
+		}
+	}
+	return ids
+}
+
+// parseOpenCodeJSON reads `opencode run --format json`: one event per line;
+// "text" parts carry the reply and every event carries the session id.
+func parseOpenCodeJSON(stdout string) (string, string) {
+	var text []string
+	session := ""
+	for _, l := range lines(stdout) {
+		l = strings.TrimSpace(l)
+		if l == "" || l[0] != '{' {
+			continue
+		}
+		var ev struct {
+			Type      string `json:"type"`
+			SessionID string `json:"sessionID"`
+			Part      struct {
+				Text string `json:"text"`
+			} `json:"part"`
+		}
+		if json.Unmarshal([]byte(l), &ev) != nil {
+			continue
+		}
+		if ev.SessionID != "" {
+			session = ev.SessionID
+		}
+		if ev.Type == "text" && strings.TrimSpace(ev.Part.Text) != "" {
+			text = append(text, ev.Part.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(text, "\n")), session
+}
+
+// "provider/model" per line (opencode models)
+func parseOpenCodeModels(out string) []string {
+	var ids []string
+	for _, l := range lines(out) {
+		if l = strings.TrimSpace(l); strings.Contains(l, "/") && !strings.Contains(l, " ") {
+			ids = append(ids, l)
 		}
 	}
 	return ids

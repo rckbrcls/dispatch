@@ -49,6 +49,12 @@ func ProviderOf(agent, model string) string {
 		return "cursor"
 	case "antigravity":
 		return "google"
+	case "opencode":
+		// models are "provider/model"; the prefix is the provider
+		if p, _, ok := strings.Cut(m, "/"); ok && p != "" {
+			return p
+		}
+		return ""
 	default:
 		return ""
 	}

@@ -16,6 +16,10 @@ type File struct {
 	Allow    Rules  `json:"allow,omitempty"`
 	Deny     Rules  `json:"deny,omitempty"`
 	Discover bool   `json:"discover,omitempty"`
+	// Binaries maps an agent name to the executable to run for it, for CLIs
+	// that are not on PATH. Only the global config is honoured: a project
+	// file must not be able to point dispatch at an arbitrary program.
+	Binaries map[string]string `json:"binaries,omitempty"`
 }
 
 // Rules is the persistent routing policy. An empty allow dimension does not
@@ -55,7 +59,7 @@ func Validate(f File) error {
 	}
 }
 
-type present struct{ priority, allow, deny, discover bool }
+type present struct{ priority, allow, deny, discover, binaries bool }
 
 // LoadAll merges global and project config. Project values win by key; deny
 // lists are unioned so a project cannot accidentally weaken a global deny.
@@ -81,6 +85,7 @@ func LoadAll(global, project string) (File, error) {
 	if pp.deny {
 		out.Deny = union(g.Deny, p.Deny)
 	}
+	out.Binaries = g.Binaries
 	_ = gp
 	return out, nil
 }
@@ -139,6 +144,12 @@ func decode(path string, b []byte) (File, present, error) {
 		var err error
 		if f.Deny, err = decodeRules(v); err != nil {
 			return File{}, p, fmt.Errorf("%s: deny %w", path, err)
+		}
+	}
+	if v, ok := raw["binaries"]; ok {
+		p.binaries = true
+		if err := json.Unmarshal(v, &f.Binaries); err != nil {
+			return File{}, p, fmt.Errorf("%s: binaries must be an object of agent to path", path)
 		}
 	}
 	switch f.Priority {
@@ -245,6 +256,13 @@ func Write(path string, f File) error {
 	}
 	if err := put("deny", f.Deny); err != nil {
 		return err
+	}
+	if len(f.Binaries) > 0 {
+		if err := put("binaries", f.Binaries); err != nil {
+			return err
+		}
+	} else {
+		delete(raw, "binaries")
 	}
 	return writeRaw(path, raw)
 }

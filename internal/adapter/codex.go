@@ -20,14 +20,14 @@ import (
 type Codex struct{}
 
 func (Codex) Name() string   { return "codex" }
-func (Codex) Binary() string { return "codex" }
+func (Codex) Binary() string { return Bin("codex") }
 func (Codex) Capabilities() Capabilities {
 	return Capabilities{EffortMode: "config", Efforts: []string{"low", "medium", "high", "xhigh"}, SessionResume: true, StructuredOutput: true, ReadOnly: true, FileEditing: true, Usage: true}
 }
 func (Codex) UsageSource() string { return SourceCodexAppServer }
 
 func (Codex) Probe(ctx context.Context) ProbeReport {
-	return probeBinary(ctx, "codex", "codex", Codex{}.Capabilities(), codexProbeFlags)
+	return probeBinary(ctx, "codex", Bin("codex"), Codex{}.Capabilities(), codexProbeFlags)
 }
 
 func (Codex) Resume(ctx context.Context, req Request, model string) (Result, error) {
@@ -62,7 +62,7 @@ type rpcMsg struct {
 func appServerCall(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "codex", "-s", "read-only", "-a", "never", "app-server")
+	cmd := exec.CommandContext(ctx, Bin("codex"), "-s", "read-only", "-a", "never", "app-server")
 	cmd.Env = sandbox.Environ()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -234,7 +234,7 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	defer os.Remove(out.Name())
 
 	args := codexArgs(req, model, out.Name())
-	cmd := exec.CommandContext(ctx, "codex", args...)
+	cmd := exec.CommandContext(ctx, Bin("codex"), args...)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
 	} else {

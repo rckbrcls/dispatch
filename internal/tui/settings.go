@@ -133,6 +133,8 @@ func (m *model) rowCount() int {
 	case tabSubagents:
 		p, _ := subagent.Load(m.settingsPath())
 		return len(p)
+	case tabAgents:
+		return len(adapter.Known())
 	}
 	return 0
 }
@@ -192,8 +194,74 @@ func (m *model) inlineKey(k string) bool {
 		return m.tiersKey(k)
 	case tabSubagents:
 		return m.subagentsKey(k)
+	case tabAgents:
+		return m.agentsKey(k)
 	}
 	return false
+}
+
+// saveBinaries stores the per-agent executable paths in the global config
+// (never the project file) and applies them to this process at once.
+func (m *model) saveBinaries(bins map[string]string) error {
+	path := config.Path(m.home())
+	if len(bins) == 0 {
+		bins = nil
+	}
+	if err := config.WriteKey(path, "binaries", bins); err != nil {
+		return err
+	}
+	adapter.SetBinaries(bins)
+	return nil
+}
+
+func (m *model) agentsKey(k string) bool {
+	ds := adapter.Detect()
+	if m.setRow >= len(ds) {
+		return false
+	}
+	d := ds[m.setRow]
+	f, _ := config.Load(config.Path(m.home()))
+	bins := map[string]string{}
+	for a, p := range f.Binaries {
+		bins[a] = p
+	}
+	switch k {
+	case "b", "enter":
+		m.ask(d.Agent+" executable (absolute path; empty = default `"+d.Default+"` on PATH)", coalesce(d.Configured, d.Suggest), func(v string) error {
+			if v == "" {
+				delete(bins, d.Agent)
+				return m.saveBinaries(bins)
+			}
+			v = expandHome(v)
+			if err := adapter.ValidBinary(v); err != nil {
+				return fmt.Errorf("%s: not an executable absolute path (%v)", v, err)
+			}
+			bins[d.Agent] = v
+			return m.saveBinaries(bins)
+		})
+		return true
+	case "d":
+		if d.Suggest == "" {
+			m.setMsg = "! nothing detected for " + d.Agent + " outside PATH"
+			return true
+		}
+		bins[d.Agent] = d.Suggest
+	case "x":
+		delete(bins, d.Agent)
+	default:
+		return false
+	}
+	m.report(m.saveBinaries(bins), "saved "+shortHome(config.Path(m.home())))
+	return true
+}
+
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
 }
 
 func (m *model) tiersKey(k string) bool {
@@ -903,17 +971,40 @@ func (m *model) settingsSubagents(out func(string), w int) {
 
 func (m *model) settingsAgents(out func(string), w int) {
 	out(heading("Agents", w))
-	out(dim.Render("  CLIs dispatch can route to (read-only; `dispatch doctor` probes them)"))
+	out(dim.Render("  CLIs dispatch can route to · executable paths live in the global config"))
 	out("")
 	var rows [][]string
-	for _, a := range adapter.Known() {
-		path, state := "—", "not installed"
-		if p, err := exec.LookPath(a.Binary()); err == nil {
-			path, state = shortHome(p), "installed"
+	var notes []string
+	for i, d := range adapter.Detect() {
+		mark := " "
+		if i == m.setRow {
+			mark = accent.Render("▸")
 		}
-		rows = append(rows, []string{a.Name(), a.Binary(), state, path})
+		state := map[string]string{"configured": "configured", "PATH": "on PATH", "found": "found, not in use", "missing": "not installed", "invalid": "invalid path"}[d.Source]
+		col := cOK
+		if d.Source == "missing" || d.Source == "invalid" {
+			col = cBad
+		} else if d.Source == "found" {
+			col = cWarn
+		}
+		path := coalesce(shortHome(d.Path), "—")
+		if d.Path == "" && d.Suggest != "" {
+			path = shortHome(d.Suggest)
+		}
+		if d.Source == "invalid" {
+			path = shortHome(d.Configured)
+		}
+		rows = append(rows, []string{mark, d.Agent, d.Default, lipgloss.NewStyle().Foreground(col).Render(state), path})
+		if d.Suggest != "" && d.Source == "found" {
+			notes = append(notes, d.Agent+": press d to use "+shortHome(d.Suggest))
+		}
 	}
-	out(grid([]string{"agent", "binary", "state", "path"}, rows))
+	m.setLine = m.setN + 3 + m.setRow
+	out(grid([]string{"", "agent", "binary", "state", "path"}, rows))
+	for _, n := range notes {
+		out(lipgloss.NewStyle().Foreground(cWarn).Render("  ⚠ " + n))
+	}
+	out(dim.Render("  b set path  d use detected location  x back to default · only CLIs dispatch has an adapter for are listed"))
 }
 
 func (m *model) settingsView() string {
@@ -934,7 +1025,7 @@ func (m *model) settingsView() string {
 			"tab section · ↑↓ · enter · e edit · p scope · , back",
 			"tab · ↑↓ · enter · e · p · ,")
 	case m.setTab == tabAgents:
-		help = fit(m.w, "tab/1-4 section · , back · q quit", "tab · , back")
+		help = fit(m.w, "tab/1-4 section · ↑↓ select · b path · d detected · x default · , back · q quit", "tab · ↑↓ · b · d · x · ,")
 	default:
 		help = fit(m.w,
 			"tab/1-4 section · ↑↓ select · keys below · e edit in $EDITOR · , back · q quit",

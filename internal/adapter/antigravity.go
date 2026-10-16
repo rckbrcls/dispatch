@@ -55,7 +55,7 @@ var antigravityRun = cliAdapter{
 }
 
 func (Antigravity) Name() string               { return "antigravity" }
-func (Antigravity) Binary() string             { return "agy" }
+func (Antigravity) Binary() string             { return Bin("antigravity") }
 func (Antigravity) Capabilities() Capabilities { return antigravityRun.caps }
 func (Antigravity) UsageSource() string        { return SourceAgyUsage }
 func (Antigravity) Probe(ctx context.Context) ProbeReport {
@@ -86,7 +86,7 @@ func (Antigravity) Usage(ctx context.Context) ([]QuotaSample, error) {
 func agyUsageRaw(ctx context.Context) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "agy", "-p", "/usage", "--output-format", "json")
+	cmd := exec.CommandContext(ctx, Bin("antigravity"), "-p", "/usage", "--output-format", "json")
 	cmd.Env = sandbox.Environ()
 	ownGroup(cmd)
 	var out bytes.Buffer

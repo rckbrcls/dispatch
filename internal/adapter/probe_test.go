@@ -252,7 +252,7 @@ func installProbeCLI(t *testing.T, dir, binary, versionText, helpText string) st
 printf '%%s\n' "$*" >> %q
 case "$*" in
 --version) /bin/cat %q ;;
---help|"exec --help") /bin/cat %q ;;
+--help|"exec --help"|"run --help") /bin/cat %q ;;
 *) echo "refusing $*" >&2; exit 97 ;;
 esac
 `, logPath, verPath, helpPath)
@@ -269,7 +269,7 @@ func assertProbeOnly(t *testing.T, logPath string) {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		if line != "--version" && line != "--help" && line != "exec --help" {
+		if line != "--version" && line != "--help" && line != "exec --help" && line != "run --help" {
 			t.Fatalf("probe invoked %q\nlog:\n%s", line, b)
 		}
 	}
