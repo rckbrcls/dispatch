@@ -1184,6 +1184,14 @@ func merge(args []string) int {
 		}
 	}
 
+	// Persist the outcome so list/stats/TUI can tell merged runs from pending ones.
+	now := time.Now()
+	rec.MergedAt, rec.MergeSHA = &now, mergeSHA
+	if v, ok := body["post_merge_verification"].(string); ok {
+		rec.MergeCheck = v
+	}
+	_ = runsStore().Append(rec)
+
 	printJSON(body)
 	if postVerifyFailed {
 		return 1

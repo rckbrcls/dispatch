@@ -366,21 +366,11 @@ func (d Deps) Route(ctx context.Context, o Options) (RouteReport, error) {
 	if err := validateOptions(o); err != nil {
 		return r, err
 	}
-	cs, rejected := d.selectCandidatesWith(ctx, o)
+	ranked, balanced, rejected, relaxed := d.plan(ctx, o, false)
 	r.Eliminated = rejected
-	if len(cs) == 0 && o.Filters.Relax && policyRequestReason(d.Policy, o.Filters) == "" {
-		priority := o.Filters.Priority
-		o.Filters = store.Filters{Priority: priority}
-		if o.Tier == "" {
-			o.Tier = adapter.TierNormal
-		}
-		cs, rejected = d.selectCandidatesWith(ctx, o)
-		r.Eliminated = append(r.Eliminated, rejected...)
+	if relaxed {
 		r.Note = "--relax: filters relaxed to tier routing"
 	}
-	observed := d.observe(ctx, cs, false)
-	ranked := router.Rank(observed)
-	balanced := router.Rank(shiftPriority(observed, router.PriorityBalanced))
 	for _, c := range ranked {
 		r.Candidates = append(r.Candidates, RouteCandidate{
 			Filters: routeFilters(c), Score: router.Score(c), Reason: router.Reason(c), Terms: router.Terms(c),

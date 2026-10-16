@@ -3,6 +3,7 @@ package store
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -220,5 +221,43 @@ func TestConcurrentAppendWithRotationLosesNothing(t *testing.T) {
 	recs, err := s.List()
 	if err != nil || len(recs) != n {
 		t.Fatalf("got %d records, want %d (err %v)", len(recs), n, err)
+	}
+}
+
+func TestRateLimitReIsSpecific(t *testing.T) {
+	for _, s := range []string{"429 Too Many Requests", "rate limit reached", "You exceeded your current quota", "usage limit hit", "RESOURCE_EXHAUSTED", "insufficient_quota"} {
+		if !RateLimitRe.MatchString(s) {
+			t.Errorf("should match %q", s)
+		}
+	}
+	for _, s := range []string{"all 2 candidates exhausted", "quota file missing", "port 14290 busy", "disk space exhausted"} {
+		if RateLimitRe.MatchString(s) {
+			t.Errorf("should not match %q", s)
+		}
+	}
+}
+
+func TestGetLatestLineExactAndPrefix(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "runs.jsonl")}
+	for _, r := range []Record{
+		{ID: "20260101-aaaa1111", Status: Running},
+		{ID: "20260101-bbbb2222", Status: Completed},
+		{ID: "20260101-aaaa1111", Status: Failed},
+	} {
+		if err := s.Append(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r, err := s.Get("20260101-aaaa1111"); err != nil || r.Status != Failed {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if r, err := s.Get("20260101-bbbb"); err != nil || r.ID != "20260101-bbbb2222" {
+		t.Fatalf("prefix: %+v %v", r, err)
+	}
+	if _, err := s.Get("20260101"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("want ambiguous, got %v", err)
+	}
+	if _, err := s.Get("zzz"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("%v", err)
 	}
 }

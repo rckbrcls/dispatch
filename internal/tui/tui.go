@@ -72,6 +72,17 @@ type model struct {
 	learnOn    bool
 	statsRange int
 	all        []store.Record
+	// settings screen
+	settingsOn bool
+	setTab     int
+	setRow     int
+	setProject bool
+	setMsg     string
+	edit       *editState
+	prompt     *prompt
+	setN       int // lines rendered so far in the settings page
+	setLine    int // line of the selected row
+	editOrig   string
 }
 
 func (m *model) Init() tea.Cmd {
@@ -96,15 +107,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.renderStats()
 		case m.learnOn:
 			m.renderLearn()
+		case m.settingsOn:
+			m.renderSettings()
 		default:
 			m.render()
 		}
+	case editDoneMsg:
+		m.finishEdit(msg)
+		return m, nil
 	case tickMsg:
 		m.refresh(false)
 		return m, tick()
 	case tea.KeyMsg:
+		// Held or fast keys arrive batched ("jjjj"): replay them one by one so
+		// shortcuts still match. Text inputs and pastes keep the whole run.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste && !(m.settingsOn && m.prompt != nil) {
+			var cmds []tea.Cmd
+			for _, r := range msg.Runes {
+				_, c := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+				cmds = append(cmds, c)
+			}
+			return m, tea.Batch(cmds...)
+		}
 		if m.logID != "" {
 			return m.logKey(msg)
+		}
+		if m.settingsOn {
+			return m.settingsKey(msg)
 		}
 		if m.statsOn {
 			return m.statsKey(msg)
@@ -113,6 +142,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.learnKey(msg)
 		}
 		switch msg.String() {
+		case ",":
+			m.openSettings()
+			return m, nil
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "enter", "o":
@@ -259,6 +291,9 @@ func (m *model) refresh(force bool) {
 	if m.ready && m.logID != "" {
 		m.renderLog()
 		return
+	}
+	if m.ready && m.settingsOn {
+		return // static page: the tick must not repaint cards over it
 	}
 	if m.ready && m.statsOn {
 		m.renderStats()
@@ -700,6 +735,9 @@ func (m *model) View() string {
 	if m.logID != "" {
 		return m.logView()
 	}
+	if m.settingsOn {
+		return m.settingsView()
+	}
 	if m.statsOn {
 		return m.statsView()
 	}
@@ -733,9 +771,9 @@ func (m *model) View() string {
 		scopeKey = "this repo"
 	}
 	help := fit(m.w,
-		"↑↓ navigate · enter full output · space preview · s stats · l learning · c cancel · a "+scopeKey+" · q quit",
-		"↑↓ move · enter output · space peek · s stats · l learn · c cancel · a "+scopeKey+" · q quit",
-		"↑↓ · enter · space · s · l · c · a · q")
+		"↑↓ navigate · enter full output · space preview · s stats · l learning · , settings · c cancel · a "+scopeKey+" · q quit",
+		"↑↓ move · enter output · space peek · s stats · l learn · , settings · c cancel · a "+scopeKey+" · q quit",
+		"↑↓ · enter · space · s · l · , · c · a · q")
 	if m.flash != "" {
 		help = lipgloss.NewStyle().Foreground(cWarn).Render(m.flash) + dim.Render("  ·  ") + dim.Render(help)
 	} else {

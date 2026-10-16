@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -84,6 +85,9 @@ type Record struct {
 	Repo         string         `json:"repo,omitempty"`     // repo root when a worktree was made
 	Worktree     string         `json:"worktree,omitempty"` // path the agent ran in
 	Branch       string         `json:"branch,omitempty"`
+	MergedAt     *time.Time     `json:"mergedAt,omitempty"`   // set by `dispatch merge`
+	MergeSHA     string         `json:"mergeSha,omitempty"`   // HEAD after the merge
+	MergeCheck   string         `json:"mergeCheck,omitempty"` // post-merge verification: passed|failed
 	Note         string         `json:"note,omitempty"`
 	NoVerify     bool           `json:"noVerify,omitempty"`
 	Verification string         `json:"verification,omitempty"` // verified|verification_failed|unverified|error
@@ -199,6 +203,24 @@ func (s Store) lock() (func(), error) {
 
 // Get returns the latest record for id. An id prefix is accepted when unique.
 func (s Store) Get(id string) (Record, error) {
+	// Fast path: an exact id lives in the newest file that mentions it, so scan
+	// newest-first and stop there instead of folding the whole history.
+	if paths, err := s.historyPaths(); err == nil && id != "" {
+		for i := len(paths) - 1; i >= 0; i-- {
+			var hit *Record
+			if err := readRecords(paths[i], func(r Record) {
+				if r.ID == id {
+					r := r
+					hit = &r
+				}
+			}); err != nil {
+				break
+			}
+			if hit != nil {
+				return *hit, nil
+			}
+		}
+	}
 	all, err := s.latest()
 	if err != nil {
 		return Record{}, err
@@ -361,3 +383,9 @@ func readRecords(path string, fn func(Record)) error {
 	}
 	return sc.Err()
 }
+
+// RateLimitRe matches provider errors that mean "stop sending work here".
+// It is shared by the runner (cooldowns, exit classes) and stats (old rows
+// without an exit class), and avoids bare "quota"/"exhausted", which also
+// appear in ordinary messages such as "all candidates exhausted".
+var RateLimitRe = regexp.MustCompile(`(?i)rate.?limit|usage limit|too many requests|\b429\b|resource_exhausted|insufficient[_ ]quota|(?:quota|credits?|usage)\s+(?:was\s+|has\s+been\s+)?(?:exceeded|exhausted|reached|limit)|exceeded\s+(?:your\s+|the\s+)?(?:current\s+)?(?:quota|usage|credits?)|out of (?:credits|usage)`)

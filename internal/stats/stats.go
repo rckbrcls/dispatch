@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -19,9 +18,9 @@ const (
 	MinSamples = 5
 )
 
-// rateRe matches the runner's rate-limit detector so older rows, which have
+// rateRe is the runner's rate-limit detector so older rows, which have
 // no exitClass, still count.
-var rateRe = regexp.MustCompile(`(?i)rate.?limit|quota|usage limit|too many requests|\b429\b|resource_exhausted|exhausted`)
+var rateRe = store.RateLimitRe
 
 // Options selects the aggregation. A zero Since includes every run.
 type Options struct {

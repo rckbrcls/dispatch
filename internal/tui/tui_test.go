@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"dispatch/internal/store"
+	"dispatch/internal/subagent"
+	"dispatch/internal/tiers"
 )
 
 func TestPrettyCodexEvents(t *testing.T) {
@@ -165,5 +168,204 @@ func TestLearnScreenRenders(t *testing.T) {
 		if !strings.Contains(v, want) {
 			t.Errorf("learning view missing %q", want)
 		}
+	}
+}
+
+func settingsModel(t *testing.T) (*model, string) {
+	dir := t.TempDir()
+	m := &model{opts: Options{Store: store.Store{Path: filepath.Join(dir, "runs.jsonl")}}, open: map[string]bool{}, logs: map[string]logTail{}, showAll: true, w: 110, h: 40, ready: true}
+	m.vp = viewport.New(110, 300)
+	m.openSettings()
+	return m, dir
+}
+
+func TestSettingsInlineToggleSavesConfig(t *testing.T) {
+	m, dir := settingsModel(t)
+	m.toggleSetting() // priority: unset -> speed
+	m.setRow = 1
+	m.toggleSetting() // discover -> true
+	b, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil || !strings.Contains(string(b), `"speed"`) || !strings.Contains(string(b), `"discover": true`) {
+		t.Fatalf("%s %v", b, err)
+	}
+	m.renderSettings()
+	if v := m.settingsView(); !strings.Contains(v, "speed") || !strings.Contains(v, "settings") {
+		t.Fatal(v)
+	}
+}
+
+func TestSettingsEditValidatesBeforeReplacing(t *testing.T) {
+	m, dir := settingsModel(t)
+	target := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(target, []byte(`{"priority":"speed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.setTab = tabConfig
+	m.beginEdit() // opens the editor command; we drive the result by hand
+	e := m.edit
+	if e == nil || e.tmp == target {
+		t.Fatalf("%+v", e)
+	}
+	// invalid priority: file untouched, copy kept, error shown
+	os.WriteFile(e.tmp, []byte(`{"priority":"warp"}`), 0o600)
+	m.finishEdit(editDoneMsg{})
+	if m.edit == nil || m.edit.err == "" {
+		t.Fatal("expected validation error")
+	}
+	if b, _ := os.ReadFile(target); !strings.Contains(string(b), "speed") {
+		t.Fatalf("target changed: %s", b)
+	}
+	if v := m.settingsView(); !strings.Contains(v, "reopen") {
+		t.Fatal(v)
+	}
+	// fixed on retry: replaced atomically, temp copy gone
+	os.WriteFile(e.tmp, []byte(`{"priority":"quality"}`), 0o600)
+	m.finishEdit(editDoneMsg{})
+	if m.edit != nil {
+		t.Fatal("edit should be finished")
+	}
+	if b, _ := os.ReadFile(target); !strings.Contains(string(b), "quality") {
+		t.Fatalf("%s", b)
+	}
+	if _, err := os.Stat(e.tmp); !os.IsNotExist(err) {
+		t.Fatal("temp copy left behind")
+	}
+}
+
+func TestSettingsTabsRenderAndSubagentCheck(t *testing.T) {
+	m, dir := settingsModel(t)
+	for tab, want := range map[int]string{tabTiers: "efforts", tabSubagents: "no profiles", tabAgents: "binary"} {
+		m.setTab = tab
+		m.renderSettings()
+		if v := m.settingsView(); !strings.Contains(v, want) {
+			t.Errorf("tab %d missing %q:\n%s", tab, want, v)
+		}
+	}
+	bad := filepath.Join(dir, "agents.json")
+	os.WriteFile(bad, []byte(`{"agents":{"x":{"tier":"giant"}}}`), 0o644)
+	if err := checkSubagents(bad); err == nil || !strings.Contains(err.Error(), "invalid tier") {
+		t.Fatalf("%v", err)
+	}
+	os.Setenv("EDITOR", "code -w")
+	t.Cleanup(func() { os.Unsetenv("EDITOR") })
+	os.Unsetenv("VISUAL")
+	if c := editorCommand("f.json"); len(c.Args) != 3 || c.Args[1] != "-w" {
+		t.Fatalf("%v", c.Args)
+	}
+}
+
+func press(m *model, keys ...string) {
+	for _, k := range keys {
+		var msg tea.KeyMsg
+		switch k {
+		case "enter":
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case "tab":
+			msg = tea.KeyMsg{Type: tea.KeyTab}
+		default:
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+		}
+		m.Update(msg)
+	}
+}
+
+func typeText(m *model, s string) {
+	for _, r := range s {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+func TestSettingsEditEverythingInline(t *testing.T) {
+	m, dir := settingsModel(t)
+
+	// config: add and then remove a deny.models entry
+	press(m, "j", "j", "j", "j", "j", "j") // row 6 = deny.models
+	press(m, "enter")
+	typeText(m, "gpt-bad")
+	cfg, _ := os.ReadFile(filepath.Join(dir, "config.json"))
+	if !strings.Contains(string(cfg), "gpt-bad") || !strings.Contains(string(cfg), `"deny"`) {
+		t.Fatalf("%s", cfg)
+	}
+	press(m, "enter")
+	typeText(m, "gpt-bad")
+	cfg, _ = os.ReadFile(filepath.Join(dir, "config.json"))
+	if strings.Contains(string(cfg), "gpt-bad") {
+		t.Fatalf("not removed: %s", cfg)
+	}
+
+	// tiers: bump speed, add entry, reorder, edit model
+	press(m, "tab")
+	press(m, "s")
+	press(m, "a")
+	typeText(m, "codex gpt-new")
+	press(m, "m")
+	m.prompt = nil
+	b, err := os.ReadFile(filepath.Join(dir, "tiers.json"))
+	if err != nil || !strings.Contains(string(b), "gpt-new") || !strings.Contains(string(b), `"speed"`) {
+		t.Fatalf("%s %v", b, err)
+	}
+	press(m, "J")
+	if _, err := tiers.Load(filepath.Join(dir, "tiers.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	// subagents: new profile, cycle tier, readonly, timeout, instructions
+	m.setTab, m.setRow = tabSubagents, 0
+	press(m, "n")
+	typeText(m, "rev")
+	press(m, "enter", "r", "t")
+	typeText(m, "15m")
+	press(m, "i")
+	typeText(m, "review the diff")
+	ps, err := subagent.Load(filepath.Join(dir, "agents.json"))
+	p := ps["rev"]
+	if err != nil || p.Tier != "hard" || !p.ReadOnly || p.Timeout != "15m" || p.Instructions != "review the diff" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	press(m, "t")
+	typeText(m, "banana")
+	if m.setMsg == "" || !strings.HasPrefix(m.setMsg, "!") {
+		t.Fatalf("invalid timeout accepted: %q", m.setMsg)
+	}
+	ps, _ = subagent.Load(filepath.Join(dir, "agents.json"))
+	if ps["rev"].Timeout != "15m" {
+		t.Fatal("invalid value was saved")
+	}
+}
+
+func TestSettingsSelectionStaysVisibleInShortWindow(t *testing.T) {
+	m, _ := settingsModel(t)
+	m.h = 12
+	m.vp = viewport.New(110, 8)
+	m.renderSettings()
+	for i := 0; i < 7; i++ {
+		press(m, "j")
+	}
+	if v := m.settingsView(); !strings.Contains(v, "▸ deny.agents") {
+		t.Fatalf("selected row scrolled out of view:\n%s", v)
+	}
+	for i := 0; i < 7; i++ {
+		press(m, "k")
+	}
+	if v := m.settingsView(); !strings.Contains(v, "▸ priority") {
+		t.Fatalf("top row not visible:\n%s", v)
+	}
+}
+
+func TestSettingsSurvivesRefreshTick(t *testing.T) {
+	m, _ := settingsModel(t)
+	m.refresh(true)
+	m.Update(tickMsg(time.Now()))
+	if v := m.settingsView(); !strings.Contains(v, "Config") || strings.Contains(v, "COMPLETED") {
+		t.Fatalf("tick repainted the settings page:\n%s", v)
+	}
+}
+
+func TestBatchedKeysAreReplayed(t *testing.T) {
+	m, _ := settingsModel(t)
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("jjj")})
+	if m.setRow != 3 {
+		t.Fatalf("row = %d, want 3", m.setRow)
 	}
 }

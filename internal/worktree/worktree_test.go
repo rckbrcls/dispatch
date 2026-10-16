@@ -195,3 +195,67 @@ func TestLockMergeKeepsFileAndExcludes(t *testing.T) {
 		t.Fatalf("%d lock holders overlapped", overlaps)
 	}
 }
+
+func write(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUncommittedOverlapsHandlesOddPaths(t *testing.T) {
+	root := t.TempDir()
+	run(t, root, "init", "-q", "-b", "main")
+	for _, n := range []string{"a.txt", "with space.txt", "old.txt", "plain.txt"} {
+		write(t, root, n, "base\n")
+	}
+	run(t, root, "add", "-A")
+	run(t, root, "commit", "-q", "-m", "init")
+	run(t, root, "checkout", "-q", "-b", "feat")
+	for _, n := range []string{"a.txt", "with space.txt", "old.txt", "plain.txt"} {
+		write(t, root, n, "branch\n")
+	}
+	run(t, root, "commit", "-q", "-am", "feat")
+	run(t, root, "checkout", "-q", "main")
+
+	// " M a.txt" starts with a space: trimming the whole output used to eat it.
+	write(t, root, "a.txt", "dirty\n")
+	write(t, root, "with space.txt", "dirty\n")
+	run(t, root, "mv", "old.txt", "new.txt") // staged rename: old path must count too
+	got, err := UncommittedOverlaps(root, "feat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a.txt", "old.txt", "with space.txt"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("overlaps = %q want %q", got, want)
+	}
+}
+
+func TestMergeTreeReportsConflictedPathsOnly(t *testing.T) {
+	root := t.TempDir()
+	run(t, root, "init", "-q", "-b", "main")
+	write(t, root, "my file.txt", "base\n")
+	write(t, root, "ok.txt", "base\n")
+	run(t, root, "add", "-A")
+	run(t, root, "commit", "-q", "-m", "init")
+	run(t, root, "checkout", "-q", "-b", "feat")
+	write(t, root, "my file.txt", "feat\n")
+	write(t, root, "ok.txt", "feat\n")
+	run(t, root, "commit", "-q", "-am", "feat")
+	run(t, root, "checkout", "-q", "main")
+	write(t, root, "my file.txt", "main\n")
+	run(t, root, "commit", "-q", "-am", "main")
+
+	res, err := MergeTree(root, "main", "feat")
+	if err != nil || res.Clean || len(res.Conflicts) != 1 || res.Conflicts[0] != "my file.txt" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	run(t, root, "checkout", "-q", "-b", "clean", "main~1")
+	write(t, root, "ok.txt", "x\n")
+	run(t, root, "commit", "-q", "-am", "c")
+	res, err = MergeTree(root, "main", "clean")
+	if err != nil || !res.Clean || len(res.TreeOID) < 40 {
+		t.Fatalf("%+v %v", res, err)
+	}
+}

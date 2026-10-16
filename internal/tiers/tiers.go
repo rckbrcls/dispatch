@@ -55,6 +55,9 @@ func Load(path string) (Table, error) {
 	return t, nil
 }
 
+// DefaultJSON returns the embedded table text, for editors that start from it.
+func DefaultJSON() []byte { return append([]byte(nil), defaultJSON...) }
+
 // WriteDefault writes the embedded table to path unless it already exists.
 func WriteDefault(path string) error {
 	if _, err := os.Stat(path); err == nil {

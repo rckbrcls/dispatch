@@ -25,6 +25,23 @@ func git(dir string, args ...string) (string, error) {
 	return s, nil
 }
 
+// gitRaw returns stdout untouched (no trimming, no stderr mixed in), which
+// -z output needs: a porcelain line can start with a space and paths can hold
+// any byte except NUL.
+func gitRaw(dir string, args ...string) (string, int, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err == nil {
+		return string(out), 0, nil
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return string(out), ee.ExitCode(), nil
+	}
+	return string(out), -1, fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+}
+
 func gitExit(dir string, args ...string) (string, int, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()
@@ -281,43 +298,21 @@ type MergeTreeResult struct {
 	TreeOID   string
 }
 
+// parseConflicts reads `git merge-tree --write-tree --name-only -z` output:
+// "<tree>\0<path>\0<path>\0\0<messages>". Only the NUL-terminated section
+// before the empty field holds conflicted paths; the free-form messages after
+// it are not parsed, so odd file names cannot be misread.
 func parseConflicts(out string) []string {
-	lines := strings.Split(out, "\n")
+	fields := strings.Split(out, "\x00")
 	seen := make(map[string]bool)
 	var list []string
-
-	inHeader := true
-	for i, l := range lines {
-		line := strings.TrimSpace(l)
-		if line == "" {
-			inHeader = false
-			continue
+	for _, f := range fields[1:] {
+		if f == "" {
+			break
 		}
-		if inHeader {
-			if i == 0 {
-				continue
-			}
-			path := line
-			if idx := strings.Index(line, "\t"); idx != -1 {
-				path = strings.TrimSpace(line[idx+1:])
-			}
-			if path != "" && !seen[path] {
-				seen[path] = true
-				list = append(list, path)
-			}
-		} else {
-			if strings.HasPrefix(line, "CONFLICT") {
-				if idx := strings.LastIndex(line, " in "); idx != -1 {
-					file := strings.TrimSpace(line[idx+4:])
-					if dot := strings.Index(file, "."); dot != -1 && strings.Contains(file, " ") {
-						file = strings.Fields(file)[0]
-					}
-					if file != "" && !seen[file] {
-						seen[file] = true
-						list = append(list, file)
-					}
-				}
-			}
+		if !seen[f] {
+			seen[f] = true
+			list = append(list, f)
 		}
 	}
 	sort.Strings(list)
@@ -326,18 +321,17 @@ func parseConflicts(out string) []string {
 
 // MergeTree runs git merge-tree --write-tree to check if branch can merge cleanly into target.
 func MergeTree(root, target, branch string) (MergeTreeResult, error) {
-	out, code, err := gitExit(root, "merge-tree", "--write-tree", "--name-only", target, branch)
+	out, code, err := gitRaw(root, "merge-tree", "--write-tree", "--name-only", "-z", target, branch)
 	if err != nil {
 		return MergeTreeResult{}, err
 	}
-	if code == 0 {
-		return MergeTreeResult{Clean: true, TreeOID: strings.TrimSpace(out)}, nil
+	switch code {
+	case 0:
+		return MergeTreeResult{Clean: true, TreeOID: strings.TrimRight(out, "\x00\n")}, nil
+	case 1:
+		return MergeTreeResult{Clean: false, Conflicts: parseConflicts(out)}, nil
 	}
-	if code == 1 {
-		conflicts := parseConflicts(out)
-		return MergeTreeResult{Clean: false, Conflicts: conflicts}, nil
-	}
-	return MergeTreeResult{}, fmt.Errorf("git merge-tree exited with code %d: %s", code, out)
+	return MergeTreeResult{}, fmt.Errorf("git merge-tree exited with code %d: %s", code, strings.TrimSpace(out))
 }
 
 // CurrentBranch returns the currently checked out branch in root, or "HEAD" if detached.
@@ -429,20 +423,27 @@ func LockMerge(repo, targetBranch string) (unlock func(), err error) {
 // AND are touched by the branch relative to HEAD.
 func UncommittedOverlaps(root, branch string) ([]string, error) {
 	uncommitted := make(map[string]bool)
-	diffOut, err := git(root, "diff", "--name-only", "HEAD")
-	if err == nil && diffOut != "" {
-		for _, l := range strings.Split(diffOut, "\n") {
-			if f := strings.TrimSpace(l); f != "" {
+	if out, code, err := gitRaw(root, "diff", "--name-only", "--no-renames", "-z", "HEAD"); err == nil && code == 0 {
+		for _, f := range strings.Split(out, "\x00") {
+			if f != "" {
 				uncommitted[f] = true
 			}
 		}
 	}
-	statusOut, _ := git(root, "status", "--porcelain")
-	if statusOut != "" {
-		for _, l := range strings.Split(statusOut, "\n") {
-			if len(l) > 3 {
-				if f := strings.TrimSpace(l[3:]); f != "" {
-					uncommitted[f] = true
+	// Porcelain v1 -z entries are "XY <path>" and, for renames/copies, are
+	// followed by one extra "<orig path>" field. Do not trim: " M x" is valid.
+	if out, code, err := gitRaw(root, "status", "--porcelain=v1", "-z"); err == nil && code == 0 {
+		fields := strings.Split(out, "\x00")
+		for i := 0; i < len(fields); i++ {
+			e := fields[i]
+			if len(e) < 4 {
+				continue
+			}
+			uncommitted[e[3:]] = true
+			if e[0] == 'R' || e[0] == 'C' || e[1] == 'R' || e[1] == 'C' {
+				i++
+				if i < len(fields) && fields[i] != "" {
+					uncommitted[fields[i]] = true
 				}
 			}
 		}
@@ -451,14 +452,16 @@ func UncommittedOverlaps(root, branch string) ([]string, error) {
 		return nil, nil
 	}
 
-	branchDiff, err := git(root, "diff", "--name-only", "HEAD..."+branch)
+	out, code, err := gitRaw(root, "diff", "--name-only", "--no-renames", "-z", "HEAD..."+branch)
 	if err != nil {
 		return nil, err
 	}
+	if code != 0 {
+		return nil, fmt.Errorf("git diff HEAD...%s exited with code %d", branch, code)
+	}
 	seen := make(map[string]bool)
 	var overlapping []string
-	for _, l := range strings.Split(branchDiff, "\n") {
-		f := strings.TrimSpace(l)
+	for _, f := range strings.Split(out, "\x00") {
 		if f != "" && uncommitted[f] && !seen[f] {
 			seen[f] = true
 			overlapping = append(overlapping, f)

@@ -335,6 +335,9 @@ func TestMergeRefusesVerificationFailure(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "work.txt")); err != nil {
 		t.Fatal(err)
 	}
+	if got, err := runsStore().Get("bad"); err != nil || got.MergedAt == nil || got.MergeSHA == "" {
+		t.Fatalf("merge outcome not persisted: %+v %v", got, err)
+	}
 }
 
 func TestVerificationViewAndNotes(t *testing.T) {

@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +37,7 @@ const (
 var ErrRecursive = errors.New("refusing recursive delegation (DISPATCH_DEPTH set)")
 
 // rateLimited matches provider errors that mean "stop sending work here".
-var rateLimited = regexp.MustCompile(`(?i)rate.?limit|quota|usage limit|too many requests|\b429\b|resource_exhausted|exhausted`)
+var rateLimited = store.RateLimitRe
 
 const cooldownFor = time.Hour
 
@@ -100,6 +99,45 @@ func (d Deps) Candidates(ctx context.Context, tier adapter.Tier, needReadOnly bo
 
 func (d Deps) evaluate(ctx context.Context, cs []router.Candidate, live bool) []router.Candidate {
 	return router.Rank(d.observe(ctx, cs, live))
+}
+
+// plan is the one candidate list behind both Route (live=false) and Execute
+// (live=true): filtered candidates first, then, with --relax and no policy
+// objection, tier-routed ones that are not already listed. Quota is observed
+// once for the union; each group is ranked on its own so a relaxed candidate
+// never outranks a filtered one.
+func (d Deps) plan(ctx context.Context, o Options, live bool) (ordered, balanced []router.Candidate, rejected []string, relaxed bool) {
+	primary, rejected := d.selectCandidatesWith(ctx, o)
+	var extra []router.Candidate
+	if o.Filters.Relax && policyRequestReason(d.Policy, o.Filters) == "" {
+		fb := o
+		fb.Filters = store.Filters{Priority: o.Filters.Priority}
+		if fb.Tier == "" {
+			fb.Tier = adapter.TierNormal
+		}
+		found, why := d.selectCandidatesWith(ctx, fb)
+		for _, c := range found {
+			dup := false
+			for _, p := range primary {
+				if p.Adapter.Name() == c.Adapter.Name() && p.Model == c.Model && p.Effort == c.Effort {
+					dup = true
+				}
+			}
+			if !dup {
+				c.Note = joinNote(c.Note, "--relax: filters relaxed to tier routing")
+				extra = append(extra, c)
+			}
+		}
+		if len(primary) == 0 {
+			rejected = append(rejected, why...)
+		}
+	}
+	all := d.observe(ctx, append(append([]router.Candidate{}, primary...), extra...), live)
+	n := len(primary)
+	ordered = append(router.Rank(all[:n]), router.Rank(all[n:])...)
+	sh := shiftPriority(all, router.PriorityBalanced)
+	balanced = append(router.Rank(sh[:n]), router.Rank(sh[n:])...)
+	return ordered, balanced, rejected, len(extra) > 0
 }
 
 func (d Deps) observe(ctx context.Context, cs []router.Candidate, live bool) []router.Candidate {
@@ -422,28 +460,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		if o.Filters.Priority == "" {
 			o.Filters.Priority = router.PriorityBalanced
 		}
-		cands, rejected = d.selectCandidatesWith(ctx, o)
-		cands = d.evaluate(ctx, cands, true)
-		if o.Filters.Relax && policyRequestReason(d.Policy, o.Filters) == "" {
-			fallback := o
-			fallback.Filters = store.Filters{Priority: o.Filters.Priority}
-			if fallback.Tier == "" {
-				fallback.Tier = adapter.TierNormal
-			}
-			extra, _ := d.selectCandidatesWith(ctx, fallback)
-			for _, c := range d.evaluate(ctx, extra, true) {
-				duplicate := false
-				for _, prev := range cands {
-					if prev.Adapter.Name() == c.Adapter.Name() && prev.Model == c.Model && prev.Effort == c.Effort {
-						duplicate = true
-					}
-				}
-				if !duplicate {
-					c.Note = joinNote(c.Note, "--relax: filters relaxed to tier routing")
-					cands = append(cands, c)
-				}
-			}
-		}
+		cands, _, rejected, _ = d.plan(ctx, o, true)
 		if len(cands) == 0 {
 			if len(rejected) > 0 {
 				return finish(store.Failed, strings.Join(rejected, "; "))

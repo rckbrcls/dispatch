@@ -14,7 +14,7 @@ const SummarySchema = "dispatch.run-summary.v1"
 
 var (
 	conflictRe = regexp.MustCompile(`(?i)merge conflict|conflict marker|\bCONFLICT\b|<<<<<<<`)
-	crashRe    = regexp.MustCompile(`(?i)\bpanic\b|segmentation fault|core dumped|signal:|exit status 13[479]|\baborted\b`)
+	crashRe    = regexp.MustCompile(`(?i)\bpanic:|goroutine \d+ \[|segmentation fault|core dumped|fatal signal|signal: (?:segmentation|abort|bus|killed)|exit status 13[479]`)
 )
 
 // EffortOf and ProviderOf retain the telemetry API.
