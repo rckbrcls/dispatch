@@ -57,6 +57,8 @@ type Request struct {
 	Env []string
 	// Started persists the agent group leader before waiting for it.
 	Started func(int) error
+	// LogPath, when set, receives a redacted live copy of the agent's output.
+	LogPath string
 }
 
 // Result is the raw outcome of a run, before compaction.

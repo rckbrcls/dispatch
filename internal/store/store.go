@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"dispatch/internal/sandbox"
@@ -161,6 +162,11 @@ func (s Store) Append(r Record) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
 		return err
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := s.rotate(); err != nil {
 		return err
 	}
@@ -175,6 +181,20 @@ func (s Store) Append(r Record) error {
 	}
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+// lock serializes appends and rotation across dispatch processes. The sidecar
+// file is never removed, so every process locks the same inode.
+func (s Store) lock() (func(), error) {
+	f, err := os.OpenFile(s.Path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 
 // Get returns the latest record for id. An id prefix is accepted when unique.

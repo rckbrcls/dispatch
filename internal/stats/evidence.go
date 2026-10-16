@@ -45,7 +45,8 @@ func EvidenceByTierModel(recs []store.Record) map[string]ModelEvidence {
 		if r.Verification == "verified" {
 			a.verified++
 		}
-		if ms, ok := r.ObservedMs(); ok {
+		// Only successful runs time the model; timeouts and cancels would skew speed.
+		if ms, ok := r.ObservedMs(); ok && r.Status == store.Completed {
 			a.durs = append(a.durs, ms)
 		}
 	}

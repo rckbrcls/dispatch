@@ -111,6 +111,7 @@ Tier é opcional com provider/model. Effort incompatível é recusado. A priorid
 
 ## Regras
 
+- **Log verboso é só do usuário:** o TUI (`dispatch` sem argumentos) mostra a saída completa do agente; ela fica em `~/.dispatch/logs/*.agent.log`. Não leia esses arquivos (gasta tokens): use só o resumo JSON.
 - **Sem delegação recursiva:** dentro de um run do dispatch o comando é recusado (`DISPATCH_DEPTH`).
 - **Modelos Claude não rodam em CLIs de terceiros:** o dispatch os recusa.
 - **Não reenvie igual:** `FAILED` com candidatos esgotados significa melhorar o brief (1–2 frases) ou

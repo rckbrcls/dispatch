@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -242,7 +243,9 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	cmd.Dir = req.Dir
 	cmd.Stdin = bytes.NewBufferString(req.Prompt)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	logOut, logErr, closeLog := openLiveLog(req.LogPath)
+	defer closeLog()
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, logOut), io.MultiWriter(&stderr, logErr)
 	runErr := runAgent(cmd, req.Started)
 
 	if errors.Is(runErr, ErrProcessesAlive) {

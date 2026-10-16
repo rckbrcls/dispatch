@@ -308,6 +308,14 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 	if o.Resume != "" {
 		o.Tier = adapter.Tier(rec.Tier)
 	}
+	if rec.Dir == "" {
+		// An absolute dir lets the live viewer match runs to their repository.
+		if wd, err := os.Getwd(); err == nil {
+			rec.Dir = wd
+		}
+	} else if abs, err := filepath.Abs(rec.Dir); err == nil {
+		rec.Dir = abs
+	}
 	d.classifyRequest(&rec, o.Resume == "")
 	o.Tier = adapter.Tier(rec.Tier)
 	if err := validateOptions(o); err != nil {
@@ -347,7 +355,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		return rec, err
 	}
 	timeout := time.Duration(rec.TimeoutSec) * time.Second
-	var agentStart time.Time
+	var agentStart time.Time // start of the attempt that ends the run
 
 	finish := func(s store.Status, msg string) (store.Record, error) {
 		rec.Status, rec.Error, rec.FinishedAt = s, msg, d.Now()
@@ -477,10 +485,8 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 			skipped = append(skipped, msg)
 			continue
 		}
-		if agentStart.IsZero() {
-			agentStart = d.Now()
-		}
 		attemptStart := d.Now()
+		agentStart = attemptStart
 		rec.AgentPID = 0
 		rec.Status, rec.Agent, rec.Model = store.Running, c.Adapter.Name(), c.Model
 		rec.ExecutionTier = c.Tier
@@ -521,6 +527,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 				return d.Store.Append(rec)
 			},
 			Timeout: timeout, ResumeSession: resumeSession, Env: childEnv,
+			LogPath: AgentLogPath(d.Store, rec.ID),
 		}
 		var res adapter.Result
 		var err error
@@ -584,6 +591,14 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 	}
 	last := rec.Attempts[len(rec.Attempts)-1]
 	return finish(store.Failed, fmt.Sprintf("all %d candidates failed; last: %s/%s: %s", len(rec.Attempts), last.Agent, last.Model, last.Error))
+}
+
+// AgentLogPath is where the live, redacted copy of an agent's output goes.
+func AgentLogPath(st store.Store, id string) string {
+	if st.Path == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(st.Path), "logs", id+".agent.log")
 }
 
 // applyVerify runs after a successful write commit, including on --resume.

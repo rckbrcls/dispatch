@@ -27,6 +27,9 @@ var names = [featureCount]string{
 	"readonly", "write", "tier_easy", "tier_normal", "tier_hard",
 }
 
+// FeatureNames returns the feature names in weight order, for display.
+func FeatureNames() []string { return append([]string(nil), names[:]...) }
+
 type Input struct {
 	Prompt   string
 	Dir      string

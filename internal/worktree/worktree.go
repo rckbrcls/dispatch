@@ -3,7 +3,6 @@
 package worktree
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -363,27 +362,6 @@ func sanitizeBranch(branch string) string {
 	return r.Replace(branch)
 }
 
-func isProcessAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = p.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	if errors.Is(err, syscall.ESRCH) {
-		return false
-	}
-	if errors.Is(err, syscall.EPERM) {
-		return true
-	}
-	return false
-}
-
 // LockMerge acquires an exclusive lock for merging into targetBranch in repo.
 // It serializes merges using flock and records the holder's PID for stale detection.
 // If the lock is held, it waits up to LockTimeout.
@@ -421,8 +399,9 @@ func LockMerge(repo, targetBranch string) (unlock func(), err error) {
 				unlocked = true
 				_ = f.Truncate(0)
 				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				// The file stays: unlinking while waiters hold the old inode would
+				// let two processes lock different files at once.
 				_ = f.Close()
-				_ = os.Remove(lockPath)
 			}
 			return unlock, nil
 		}
@@ -433,11 +412,6 @@ func LockMerge(repo, targetBranch string) (unlock func(), err error) {
 		pidStr := strings.TrimSpace(string(b))
 		if pidStr != "" {
 			holderPID, _ = strconv.Atoi(pidStr)
-		}
-
-		if holderPID > 0 && !isProcessAlive(holderPID) {
-			_ = os.Remove(lockPath)
-			continue
 		}
 
 		if time.Now().After(deadline) {

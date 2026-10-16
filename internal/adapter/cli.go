@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -96,7 +97,9 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 		cmd.Dir = req.Dir
 	}
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	logOut, logErr, closeLog := openLiveLog(req.LogPath)
+	defer closeLog()
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, logOut), io.MultiWriter(&stderr, logErr)
 	runErr := runAgent(cmd, req.Started)
 
 	if errors.Is(runErr, ErrProcessesAlive) {

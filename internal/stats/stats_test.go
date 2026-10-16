@@ -298,3 +298,16 @@ func TestRoutingFilterAggregations(t *testing.T) {
 		}
 	}
 }
+
+func TestEvidenceDurationsOnlyFromCompletedRuns(t *testing.T) {
+	ms := func(n int64) *int64 { return &n }
+	recs := []store.Record{
+		{ID: "1", Status: store.Completed, Tier: "easy", Model: "m", RunMs: ms(1000)},
+		{ID: "2", Status: store.TimedOut, Tier: "easy", Model: "m", RunMs: ms(600000)},
+		{ID: "3", Status: store.Cancelled, Tier: "easy", Model: "m", RunMs: ms(500000)},
+	}
+	e := EvidenceByTierModel(recs)[EvidenceKey("easy", "m")]
+	if e.Samples != 3 || e.DurationN != 1 || e.P50Ms == nil || *e.P50Ms != 1000 {
+		t.Fatalf("%+v", e)
+	}
+}

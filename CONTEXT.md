@@ -102,7 +102,7 @@ se eta >= (resetsAt - agora): dura até o reset; senão: "acaba em eta"
 
 ## Estado atual (implementado)
 
-Comandos (ver `dispatch` sem argumentos): `agents`, `doctor`, `tiers [--init|--check]`, `config`, `route`, `classify`, `run`, `wait`, `list`, `cancel`, `recover`, `verify`, `merge`, `clean`, `result`, `stats`, `subagents`, `on|off|status`, `hook`, `skill install|show|refresh`, `update`, `version`. Detalhes de cada um na seção "Evoluções" abaixo.
+`dispatch` sem argumentos abre o TUI ao vivo do repositório atual (cartões em pilha, saída verbosa do agente em tela cheia com `enter`; tela de estatísticas com `s`: visão geral, atividade por dia e quebras por agente, modelo, provider e tier, com `t` para trocar o período; tela de learning com `l`: classificador, o que aprendeu, calibração, curva semanal, evidência por modelo e cooldowns); sem terminal, imprime o uso. O log verboso (`~/.dispatch/logs/<id>.agent.log`, redigido) é visualização do usuário: nunca entra no contexto do Claude. Comandos: `agents`, `doctor`, `tiers [--init|--check]`, `config`, `route`, `classify`, `run`, `wait`, `list`, `cancel`, `recover`, `verify`, `merge`, `clean`, `result`, `stats`, `subagents`, `on|off|status`, `hook`, `skill install|show|refresh`, `update`, `version`. Detalhes de cada um na seção "Evoluções" abaixo.
 
 | Agente | Run | Quota | Resume |
 |---|---|---|---|

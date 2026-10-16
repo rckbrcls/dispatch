@@ -597,3 +597,25 @@ func TestRouteCommandDoesNotRunCLIsOrWriteState(t *testing.T) {
 		t.Fatal("state directory changed")
 	}
 }
+
+// A detached --background child inherits the caller's cwd, so project policy
+// must follow the run's directory.
+func TestDepsForLoadsProjectPolicyFromRunDir(t *testing.T) {
+	t.Setenv("DISPATCH_HOME", t.TempDir())
+	proj := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proj, ".dispatch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"deny":{"providers":["openai"]}}`
+	if err := os.WriteFile(filepath.Join(proj, ".dispatch", "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	d := depsFor(proj)
+	if len(d.Policy.Deny.Providers) != 1 || d.Policy.Deny.Providers[0] != "openai" {
+		t.Fatalf("project policy not applied: %+v", d.Policy)
+	}
+	if other := depsFor(""); len(other.Policy.Deny.Providers) != 0 {
+		t.Fatalf("cwd without config should have no deny: %+v", other.Policy)
+	}
+}

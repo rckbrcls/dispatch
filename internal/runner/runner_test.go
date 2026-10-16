@@ -600,3 +600,29 @@ func TestCancelOrphanAndWait(t *testing.T) {
 		t.Fatalf("%+v %v", w, err)
 	}
 }
+
+type slowFail struct {
+	fake
+	delay time.Duration
+}
+
+func (s slowFail) Run(ctx context.Context, r adapter.Request, m string) (adapter.Result, error) {
+	time.Sleep(s.delay)
+	return s.fake.Run(ctx, r, m)
+}
+
+// RunMs describes the attempt that finished the run, not earlier failures,
+// otherwise speed evidence blames the model that rescued the run.
+func TestRunMsExcludesFailedFallbackAttempts(t *testing.T) {
+	var ran []string
+	d := deps(t, &ran,
+		slowFail{fake: fake{name: "a", err: errors.New("boom"), ran: &ran}, delay: 400 * time.Millisecond},
+		fake{name: "b", out: "ok\n", ran: &ran})
+	rec, err := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p"})
+	if err != nil || rec.Status != store.Completed || rec.Agent != "b" {
+		t.Fatalf("%+v %v", rec, err)
+	}
+	if rec.RunMs == nil || *rec.RunMs >= 200 {
+		t.Fatalf("RunMs %v includes the failed attempt", rec.RunMs)
+	}
+}

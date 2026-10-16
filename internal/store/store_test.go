@@ -3,9 +3,11 @@ package store
 import (
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -195,5 +197,28 @@ func TestRotateReadsGzipAndLatestWins(t *testing.T) {
 	got, err := s.Get("same")
 	if err != nil || got.Status != Completed || got.Output != "live" {
 		t.Fatalf("latest live line should win: %+v %v", got, err)
+	}
+}
+
+func TestConcurrentAppendWithRotationLosesNothing(t *testing.T) {
+	prev := rotateBytes
+	rotateBytes = 2000
+	t.Cleanup(func() { rotateBytes = prev })
+	s := Store{Path: filepath.Join(t.TempDir(), "runs.jsonl")}
+	const n = 60
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := s.Append(Record{ID: fmt.Sprintf("r-%03d", i), Status: Completed, Output: strings.Repeat("x", 300)}); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	recs, err := s.List()
+	if err != nil || len(recs) != n {
+		t.Fatalf("got %d records, want %d (err %v)", len(recs), n, err)
 	}
 }

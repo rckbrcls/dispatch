@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"dispatch/internal/tui"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/charmbracelet/x/term"
 	"io"
 	"os"
 	"os/exec"
@@ -74,7 +76,7 @@ state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, age
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalUsage("")
+		os.Exit(tuiCmd())
 	}
 	args := os.Args[2:]
 	switch os.Args[1] {
@@ -808,6 +810,8 @@ func runCommand(args []string, dry bool) int {
 		if err != nil {
 			fatal(err)
 		}
+		// Project policy comes from the run's directory, not this process's cwd.
+		d = depsFor(rec.Dir)
 		rec, err = d.Execute(ctx, rec)
 		if err != nil {
 			fatal(err)
@@ -1855,4 +1859,23 @@ func installMissingSkills(u string) error {
 		}
 	}
 	return nil
+}
+
+// tuiCmd is what bare `dispatch` does: follow this repository's runs live.
+// Without a terminal it falls back to the usage text.
+func tuiCmd() int {
+	if !term.IsTerminal(os.Stdout.Fd()) || !term.IsTerminal(os.Stdin.Fd()) {
+		fatalUsage("")
+	}
+	wd, _ := os.Getwd()
+	root := wd
+	if r := worktree.Root(wd); r != "" {
+		root = r
+	}
+	exe, _ := os.Executable()
+	if err := tui.Run(tui.Options{Store: runsStore(), Root: root, Exe: exe}); err != nil {
+		fmt.Fprintln(os.Stderr, "dispatch:", err)
+		return 1
+	}
+	return 0
 }

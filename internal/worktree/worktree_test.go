@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -150,4 +152,46 @@ func TestLockMergeStaleDetection(t *testing.T) {
 		t.Fatalf("second lock after unlock: %v", err)
 	}
 	unlock2()
+}
+
+func TestLockMergeKeepsFileAndExcludes(t *testing.T) {
+	root := t.TempDir()
+	run(t, root, "init", "-q", "-b", "main")
+	run(t, root, "commit", "--allow-empty", "-qm", "init")
+	oldTimeout := LockTimeout
+	LockTimeout = 20 * time.Second
+	defer func() { LockTimeout = oldTimeout }()
+
+	unlock, err := LockMerge(root, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if _, err := os.Stat(filepath.Join(root, ".dispatch", "merge-main.lock")); err != nil {
+		t.Fatalf("lock file must survive unlock (unlinking races with waiters): %v", err)
+	}
+
+	var inside, overlaps int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u, err := LockMerge(root, "main")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if atomic.AddInt32(&inside, 1) > 1 {
+				atomic.AddInt32(&overlaps, 1)
+			}
+			time.Sleep(10 * time.Millisecond)
+			atomic.AddInt32(&inside, -1)
+			u()
+		}()
+	}
+	wg.Wait()
+	if overlaps != 0 {
+		t.Fatalf("%d lock holders overlapped", overlaps)
+	}
 }
