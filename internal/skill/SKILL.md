@@ -23,6 +23,8 @@ Escolha o menor tier que dá conta; suba só se o resultado pedir.
 | `hard` | arquitetura, código sensível (auth, dinheiro, permissões, dados), bug difícil |
 
 Código sensível sobe um tier automaticamente.
+`dispatch classify "<prompt>" [--tier normal] [--explain] [--json]` estima risco local, sem LLM/rede; `--reset` restaura o prior.
+Sugestões aprendidas só geram aviso em `note`; treino por tier usa verificação atribuível (mínimo 5 amostras), sem guardar prompts no modelo.
 
 ## Receita
 

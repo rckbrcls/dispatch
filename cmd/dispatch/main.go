@@ -50,6 +50,7 @@ const usageText = `usage:
   dispatch config set priority|discover <value> [--project]
   dispatch config allow|deny add|rm providers|models|agents <value...> [--project]
   dispatch route [--tier T] [--provider P] [--model M] [--effort E] [--agent A] [--priority speed|balanced|quality] [--relax] [--json]
+  dispatch classify "<prompt>" [--tier T] [--dir D] [--readonly] [--json] [--explain] [--reset]
   dispatch run [--provider P] [--model M] [--effort E] [--agent A] [--priority speed|balanced|quality] [--relax] --tier easy|normal|hard [--dir D] [--readonly] [--timeout 10m]
                [--background] [--no-worktree] [--no-verify] [--json] <prompt | ->
   dispatch run --as <subagent> [flags] <prompt | ->   (profile from agents.json)
@@ -69,7 +70,7 @@ const usageText = `usage:
   dispatch skill refresh   (rewrite already-installed skill copies)
   dispatch result <id> [--section summary|verification|files|agent|attempts|meta|output] [--offset N] [--limit N] [--json]
 
-state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json, config.json, baselines/`
+state lives in $DISPATCH_HOME (default ~/.dispatch): runs.jsonl, tiers.json, agents.json, config.json, classifier.json, baselines/`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -99,6 +100,8 @@ func main() {
 		os.Exit(configCmd(args))
 	case "route":
 		os.Exit(runCommand(args, true))
+	case "classify":
+		os.Exit(classifyCmd(args))
 	case "run":
 		os.Exit(run(args))
 	case "result":

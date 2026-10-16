@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"dispatch/internal/adapter"
+	"dispatch/internal/classify"
 	"dispatch/internal/config"
 	"dispatch/internal/pace"
 	"dispatch/internal/router"
@@ -307,6 +308,8 @@ func (d Deps) Begin(o Options) (store.Record, error) {
 	if o.Resume != "" {
 		o.Tier = adapter.Tier(rec.Tier)
 	}
+	d.classifyRequest(&rec, o.Resume == "")
+	o.Tier = adapter.Tier(rec.Tier)
 	if err := validateOptions(o); err != nil {
 		return rec, err
 	}
@@ -358,7 +361,11 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		for i := range rec.Attempts {
 			rec.Attempts[i].Error = sandbox.Redact(rec.Attempts[i].Error)
 		}
-		return rec, d.Store.Append(rec)
+		err := d.Store.Append(rec)
+		if err == nil {
+			_ = classify.Observe(d.classifierPath(), rec)
+		}
+		return rec, err
 	}
 
 	extra := []string{
@@ -476,6 +483,17 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		attemptStart := d.Now()
 		rec.AgentPID = 0
 		rec.Status, rec.Agent, rec.Model = store.Running, c.Adapter.Name(), c.Model
+		rec.ExecutionTier = c.Tier
+		if rec.ExecutionTier == "" && adapter.Tier(rec.Tier).Valid() {
+			rec.ExecutionTier = rec.Tier
+		}
+		// The tier covariates must describe the executed head, including relax.
+		if len(rec.ClassifyFeatures) == len(classify.Features{}) {
+			var f classify.Features
+			copy(f[:], rec.ClassifyFeatures)
+			f = f.WithTier(adapter.Tier(rec.ExecutionTier))
+			rec.ClassifyFeatures = append([]float64(nil), f[:]...)
+		}
 		rec.Provider = c.Provider
 		if rec.Provider == "" {
 			rec.Provider = ProviderOf(rec.Agent, rec.Model)
