@@ -96,6 +96,12 @@ type Record struct {
 	ExitClass    string         `json:"exitClass,omitempty"` // ok|verify_fail|timeout|cancelled|failed|rate_limit|crash|merge_conflict
 	CreatedAt    time.Time      `json:"createdAt"`
 	FinishedAt   time.Time      `json:"finishedAt,omitzero"`
+
+	// Optional classifier telemetry; old JSONL records have no feature snapshot.
+	RequestedTier    string    `json:"requestedTier,omitempty"`
+	ExecutionTier    string    `json:"executionTier,omitempty"`
+	FeatureSchema    int       `json:"featureSchema,omitempty"`
+	ClassifyFeatures []float64 `json:"classifyFeatures,omitempty"`
 }
 
 // I64 returns a pointer so a known zero is stored and stays distinct from absent.

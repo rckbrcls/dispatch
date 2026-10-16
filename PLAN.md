@@ -18,7 +18,7 @@ As fases mexem nos mesmos arquivos (`runner.go`, `main.go`, `store`), então vã
 | 5d | Allow/deny persistente de providers, modelos e agents (+ `discover` opcional) **(feita)** | 5c | P/M |
 | 5b | Prioridade `speed|balanced|quality` no roteador **(feita)** | 3b (dados de latência) | P/M |
 | 5 | Merge gate **(feita)** | 2 | P |
-| 6 | Classificador logístico | 2 (rótulos) | M |
+| 6 | Classificador logístico **(feita)** | 2 (rótulos) | M |
 | 7 | Adiados (com gatilho) | 2 a 6 | n/d |
 
 ## Fase 0 — Segurança barata (feita)
@@ -151,7 +151,7 @@ Hoje a tabela `tiers.json` é uma lista de permissão implícita por tier e os f
 - A prioridade nunca fura as restrições: tier, capabilities, cooldown e `readonly` continuam valendo.
 - Pronto quando: o mesmo tier roteia para modelos diferentes com `speed` e `quality` num cenário de teste, e `route` explica por quê.
 
-## Fase 6 — Classificador logístico (sem LLM)
+## Fase 6 — Classificador logístico (sem LLM) (feita)
 - Features (15 a 25): tamanho/estrutura do prompt, arquivos e pacotes citados que existem no repo, tipo de mudança, risco, verificabilidade, contexto (readonly/escrita, tier pedido).
 - Normalização, modelo logístico com SGD de um passo por run, regularização L2 leve.
 - Pesos iniciais = regras à mão (prior), para funcionar no dia 1. Persistência em `~/.dispatch/classifier.json` com versão do esquema de features.
