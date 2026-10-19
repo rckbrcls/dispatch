@@ -4,7 +4,8 @@ Usage: cursor-agent [flags] [prompt]
 
 Flags:
   -p
-  --output-format text
+  --output-format stream-json
+  --stream-partial-output
   --trust
   --mode ask
   --force

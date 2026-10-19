@@ -1,7 +1,7 @@
 grok
 
 Flags:
-  --output-format plain
+  --output-format streaming-json
   --permission-mode plan
   --resume
   -s

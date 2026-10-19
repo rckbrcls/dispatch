@@ -176,8 +176,8 @@ func (d Deps) selectCandidatesWith(ctx context.Context, o Options) ([]router.Can
 			reject("Claude models refused in third-party CLIs")
 			continue
 		}
-		if _, ok := cool[e.Agent]; ok {
-			reject("agent in cooldown")
+		if key, ok := cooling(cool, e.Agent, creditScope(e.Agent, provider, e.Model)); ok {
+			reject(key + " in cooldown")
 			continue
 		}
 		caps := a.Capabilities()

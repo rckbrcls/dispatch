@@ -25,7 +25,7 @@ func Cursor() Adapter {
 			return strings.TrimSpace(string(out)), err
 		},
 		args: func(r Request, model, session string, _ bool) []string {
-			a := []string{"-p", "--output-format", "text", "--trust"}
+			a := []string{"-p", "--output-format", "stream-json", "--stream-partial-output", "--trust"}
 			if r.ReadOnly {
 				a = append(a, "--mode", "ask")
 			} else {
@@ -42,6 +42,7 @@ func Cursor() Adapter {
 			}
 			return append(a, r.Prompt)
 		},
+		parse: parseCursorStream,
 	}
 }
 
@@ -56,7 +57,7 @@ func Grok() Adapter {
 		parseModels: parseGrokModels,
 		newSession:  func(context.Context) (string, error) { return newUUID(), nil },
 		args: func(r Request, model, session string, resume bool) []string {
-			a := []string{"--output-format", "plain"}
+			a := []string{"--output-format", "streaming-json"}
 			if r.ReadOnly {
 				a = append(a, "--permission-mode", "plan")
 			} else {
@@ -76,6 +77,7 @@ func Grok() Adapter {
 			// -p takes the prompt as its value.
 			return append(a, "-p", r.Prompt)
 		},
+		parse: parseGrokStream,
 	}
 }
 
@@ -117,6 +119,7 @@ var openCodeProbeFlags = []probeFlag{
 var cursorProbeFlags = []probeFlag{
 	{Name: "-p"},
 	{Name: "--output-format", Capability: "structuredOutput"},
+	{Name: "--stream-partial-output"},
 	{Name: "--trust"},
 	{Name: "--mode", Capability: "readOnly"},
 	{Name: "--force", Capability: "fileEditing"},

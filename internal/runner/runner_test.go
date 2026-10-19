@@ -626,3 +626,31 @@ func TestRunMsExcludesFailedFallbackAttempts(t *testing.T) {
 		t.Fatalf("RunMs %v includes the failed attempt", rec.RunMs)
 	}
 }
+
+func TestCreditErrorCoolsDownModelScopeAndMarksLog(t *testing.T) {
+	var ran []string
+	d := deps(t, &ran,
+		fake{name: "a", err: errors.New("a: stopped early: ActionRequiredError: m1 is not included in your weekly usage"), ran: &ran},
+		fake{name: "b", out: "ok", ran: &ran})
+	rec, _ := d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p", ReadOnly: true})
+	if rec.Status != store.Completed || len(rec.Attempts) != 1 || rec.Attempts[0].ExitClass != "credits" {
+		t.Fatalf("%+v", rec)
+	}
+	cool := d.Store.Cooldowns(time.Now())
+	if _, ok := cool["a"]; ok {
+		t.Fatal("credit error must not cool the whole agent")
+	}
+	until, ok := cool["a:m1"]
+	if !ok || until.Before(time.Now().Add(creditCooldownFor-time.Minute)) {
+		t.Fatalf("cooldowns = %v", cool)
+	}
+	b, err := os.ReadFile(AgentLogPath(d.Store, rec.ID))
+	if err != nil || !strings.Contains(string(b), "── dispatch: a/m1 failed (credits); trying b/m2 ──") {
+		t.Fatalf("log = %q %v", b, err)
+	}
+	ran = nil
+	d.Run(context.Background(), Options{Tier: adapter.TierEasy, Prompt: "p", ReadOnly: true})
+	if len(ran) != 1 || ran[0] != "b/m2" {
+		t.Fatalf("a/m1 should be skipped, ran = %v", ran)
+	}
+}

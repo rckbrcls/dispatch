@@ -24,6 +24,8 @@ func ProviderOf(agent, model string) string { return adapter.ProviderOf(agent, m
 // classOf labels an agent error. "failed" is the generic bucket.
 func classOf(msg string) string {
 	switch {
+	case adapter.CreditRe.MatchString(msg):
+		return "credits"
 	case rateLimited.MatchString(msg):
 		return "rate_limit"
 	case conflictRe.MatchString(msg):
@@ -35,12 +37,12 @@ func classOf(msg string) string {
 	}
 }
 
-// Classify refines ExitClass with rate_limit, crash and merge_conflict.
+// Classify refines ExitClass with credits, rate_limit, crash and merge_conflict.
 func Classify(rec store.Record) string {
 	if rec.Status == store.Failed {
 		if n := len(rec.Attempts); n > 0 {
 			switch rec.Attempts[n-1].ExitClass {
-			case "rate_limit", "crash", "merge_conflict":
+			case "credits", "rate_limit", "crash", "merge_conflict":
 				return rec.Attempts[n-1].ExitClass
 			}
 		}

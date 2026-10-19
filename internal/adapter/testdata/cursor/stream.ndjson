@@ -1,0 +1,35 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/ws","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","model":"Composer 2.5","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Read a.txt with a tool, then reply with one short sentence."}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982"}
+{"type":"thinking","subtype":"delta","text":"Reading","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369276914}
+{"type":"thinking","subtype":"delta","text":" a.txt to prepare a ","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369276924}
+{"type":"thinking","subtype":"delta","text":"one","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369276925}
+{"type":"thinking","subtype":"delta","text":"-sentence reply.","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369276952}
+{"type":"thinking","subtype":"completed","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369277045}
+{"type":"tool_call","subtype":"started","call_id":"tool_7c858d08-d41e-41be-81a1-789f2973ca1","tool_call":{"readToolCall":{"args":{"path":"/tmp/ws/a.txt"}},"hookAdditionalContexts":[],"toolCallId":"tool_7c858d08-d41e-41be-81a1-789f2973ca1","startedAtMs":"1792369277076"},"model_call_id":"60811544-f6ba-43f6-b19b-a64ae5bf4bd3-0-yfpb","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369277136}
+{"type":"tool_call","subtype":"completed","call_id":"tool_7c858d08-d41e-41be-81a1-789f2973ca1","tool_call":{"readToolCall":{"args":{"path":"/tmp/ws/a.txt"},"result":{"success":{"content":"hello\n","isEmpty":false,"exceededLimit":false,"totalLines":2,"fileSize":6,"path":"/tmp/ws/a.txt","readRange":{"startLine":1,"endLine":2},"relatedCursorRulePaths":[],"relatedCursorRules":[]}}},"hookAdditionalContexts":[],"toolCallId":"tool_7c858d08-d41e-41be-81a1-789f2973ca1","startedAtMs":"1792369277076","completedAtMs":"1792369277682"},"model_call_id":"60811544-f6ba-43f6-b19b-a64ae5bf4bd3-0-yfpb","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369277751}
+{"type":"thinking","subtype":"delta","text":"The","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278657}
+{"type":"thinking","subtype":"delta","text":" file contains \"hello","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278658}
+{"type":"thinking","subtype":"delta","text":"\". I will reply in English","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278684}
+{"type":"thinking","subtype":"delta","text":".","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278700}
+{"type":"thinking","subtype":"delta","text":"\n\nI","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278796}
+{"type":"thinking","subtype":"delta","text":"'ll reply in Brazilian","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278817}
+{"type":"thinking","subtype":"delta","text":" Portuguese.","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278852}
+{"type":"thinking","subtype":"completed","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278852}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"O"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278852}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" arquivo"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" `"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":".txt"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"`"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" cont"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ém"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" apenas"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278853}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" a"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278854}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" pal"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278854}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"av"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278854}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ra"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278854}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":" “"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278854}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278854}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"”."}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982","timestamp_ms":1792369278854}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"O arquivo `a.txt` contém apenas a palavra “hello”."}]},"session_id":"c943abc3-0729-419a-a828-b5b3aec75982"}
+{"type":"result","subtype":"success","duration_ms":14057,"duration_api_ms":14057,"is_error":false,"result":"O arquivo `a.txt` contém apenas a palavra “hello”.","session_id":"c943abc3-0729-419a-a828-b5b3aec75982","request_id":"60811544-f6ba-43f6-b19b-a64ae5bf4bd3","usage":{"inputTokens":14276,"outputTokens":190,"cacheReadTokens":21917,"cacheWriteTokens":0}}

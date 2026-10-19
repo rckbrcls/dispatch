@@ -234,7 +234,9 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	defer os.Remove(out.Name())
 
 	args := codexArgs(req, model, out.Name())
-	cmd := exec.CommandContext(ctx, Bin("codex"), args...)
+	runCtx, watch, fatal, stop := failFast(ctx)
+	defer stop()
+	cmd := exec.CommandContext(runCtx, Bin("codex"), args...)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
 	} else {
@@ -245,13 +247,16 @@ func (Codex) Run(ctx context.Context, req Request, model string) (Result, error)
 	var stdout, stderr bytes.Buffer
 	logOut, logErr, closeLog := openLiveLog(req.LogPath)
 	defer closeLog()
-	cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, logOut), io.MultiWriter(&stderr, logErr)
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, logOut), io.MultiWriter(&stderr, logErr, watch)
 	runErr := runAgent(cmd, req.Started)
 
 	if errors.Is(runErr, ErrProcessesAlive) {
 		return Result{ExitCode: -1}, runErr
 	}
 	res := Result{ExitCode: cmd.ProcessState.ExitCode(), SessionID: req.ResumeSession}
+	if line := fatal(); line != "" {
+		return res, fmt.Errorf("codex exec: stopped early: %s", line)
+	}
 	if id := codexThreadID(stdout.Bytes()); id != "" {
 		res.SessionID = id
 	}

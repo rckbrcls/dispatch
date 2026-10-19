@@ -41,6 +41,44 @@ var rateLimited = store.RateLimitRe
 
 const cooldownFor = time.Hour
 
+// creditCooldownFor is longer: a model outside the plan's allowance stays
+// out until the user buys credits or the allowance resets.
+const creditCooldownFor = 12 * time.Hour
+
+// creditKey scopes a credit cooldown to one provider inside one CLI (e.g.
+// "cursor:openai"): Cursor stops serving third-party models while its own
+// and Grok's keep working, and every effort variant of the model is out.
+func creditKey(agent, provider string) string { return agent + ":" + provider }
+
+// cooling reports whether the agent, or this provider inside it, is cooling
+// down.
+func cooling(cool map[string]time.Time, agent, provider string) (string, bool) {
+	if _, ok := cool[agent]; ok {
+		return agent, true
+	}
+	if provider != "" {
+		if _, ok := cool[creditKey(agent, provider)]; ok {
+			return creditKey(agent, provider), true
+		}
+	}
+	return "", false
+}
+
+// creditScope is the provider, or the model when the provider is unknown.
+func creditScope(agent, provider, model string) string {
+	if provider == "" {
+		provider = ProviderOf(agent, model)
+	}
+	if provider == "" {
+		return model
+	}
+	return provider
+}
+
+func candidateProvider(c router.Candidate) string {
+	return creditScope(c.Adapter.Name(), c.Provider, c.Model)
+}
+
 type Deps struct {
 	Adapters []adapter.Adapter
 	Table    tiers.Table
@@ -194,7 +232,7 @@ func (d Deps) observe(ctx context.Context, cs []router.Candidate, live bool) []r
 	recorded := map[string]bool{}
 	for i := range cs {
 		c := &cs[i]
-		_, c.CooledDown = cool[c.Adapter.Name()]
+		_, c.CooledDown = cooling(cool, c.Adapter.Name(), candidateProvider(*c))
 		if !live {
 			key := c.Adapter.Name()
 			if key == "antigravity" {
@@ -494,8 +532,8 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 
 	var skipped []string
 	for _, c := range cands {
-		if _, cooling := d.Store.Cooldowns(d.now())[c.Adapter.Name()]; cooling {
-			skipped = append(skipped, c.Adapter.Name()+" in cooldown")
+		if key, ok := cooling(d.Store.Cooldowns(d.now()), c.Adapter.Name(), candidateProvider(c)); ok {
+			skipped = append(skipped, key+" in cooldown")
 			continue
 		}
 		if msg := d.block(ctx, &rec, c, resumeSession != ""); msg != "" {
@@ -546,6 +584,7 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 			Timeout: timeout, ResumeSession: resumeSession, Env: childEnv,
 			LogPath: AgentLogPath(d.Store, rec.ID),
 		}
+		markAttempt(req.LogPath, rec.Attempts, c)
 		var res adapter.Result
 		var err error
 		if resumeSession != "" {
@@ -590,7 +629,10 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 		case errors.Is(err, context.DeadlineExceeded):
 			return finish(store.TimedOut, "timeout after "+timeout.String())
 		}
-		if rateLimited.MatchString(err.Error()) {
+		switch classOf(err.Error()) {
+		case "credits":
+			d.Store.SetCooldown(creditKey(c.Adapter.Name(), candidateProvider(c)), d.Now().Add(creditCooldownFor), d.Now())
+		case "rate_limit":
 			d.Store.SetCooldown(c.Adapter.Name(), d.Now().Add(cooldownFor), d.Now())
 		}
 		rec.Attempts = append(rec.Attempts, store.Attempt{
@@ -608,6 +650,30 @@ func (d Deps) Execute(ctx context.Context, rec store.Record) (store.Record, erro
 	}
 	last := rec.Attempts[len(rec.Attempts)-1]
 	return finish(store.Failed, fmt.Sprintf("all %d candidates failed; last: %s/%s: %s", len(rec.Attempts), last.Agent, last.Model, last.Error))
+}
+
+// markAttempt writes a separator into the live log when a run falls back,
+// so a viewer does not read the previous agent's error as the current one.
+func markAttempt(path string, prev []store.Attempt, c router.Candidate) {
+	if path == "" || len(prev) == 0 {
+		return
+	}
+	last := prev[len(prev)-1]
+	class := last.ExitClass
+	if class == "" {
+		class = "failed"
+	}
+	line := fmt.Sprintf("\n── dispatch: %s/%s failed (%s); trying %s/%s ──\n",
+		last.Agent, last.Model, class, c.Adapter.Name(), c.Model)
+	if os.MkdirAll(filepath.Dir(path), 0o700) != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	f.WriteString(line)
+	f.Close()
 }
 
 // AgentLogPath is where the live, redacted copy of an agent's output goes.

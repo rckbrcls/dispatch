@@ -87,7 +87,9 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 			return Result{}, fmt.Errorf("%s: new session: %w", c.name, err)
 		}
 	}
-	cmd := exec.CommandContext(ctx, c.Binary(), c.args(req, model, session, resume)...)
+	runCtx, watch, fatal, stop := failFast(ctx)
+	defer stop()
+	cmd := exec.CommandContext(runCtx, c.Binary(), c.args(req, model, session, resume)...)
 	if len(req.Env) > 0 {
 		cmd.Env = req.Env
 	} else {
@@ -99,13 +101,16 @@ func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result,
 	var stdout, stderr bytes.Buffer
 	logOut, logErr, closeLog := openLiveLog(req.LogPath)
 	defer closeLog()
-	cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, logOut), io.MultiWriter(&stderr, logErr)
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, logOut), io.MultiWriter(&stderr, logErr, watch)
 	runErr := runAgent(cmd, req.Started)
 
 	if errors.Is(runErr, ErrProcessesAlive) {
 		return Result{ExitCode: -1}, runErr
 	}
 	res := Result{ExitCode: cmd.ProcessState.ExitCode(), SessionID: session}
+	if line := fatal(); line != "" {
+		return res, fmt.Errorf("%s: stopped early: %s", c.name, line)
+	}
 	if c.parse != nil {
 		var parsed string
 		res.Output, parsed = c.parse(stdout.String())

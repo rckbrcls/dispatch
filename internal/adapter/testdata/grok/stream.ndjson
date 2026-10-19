@@ -1,0 +1,15 @@
+{"type":"available_commands","tools":["run_terminal_command","read_file","search_replace"],"commands":[]}
+{"type":"available_commands","tools":["run_terminal_command","read_file","search_replace"],"commands":[]}
+{"type":"available_commands","tools":["run_terminal_command","read_file","search_replace"],"commands":[]}
+{"type":"usage","usage":{"input_tokens":15076,"output_tokens":92,"cache_read_input_tokens":7040,"cache_creation_input_tokens":0,"reasoning_tokens":27},"signature":"NpHdlJODjWxvNuEmagMPCpnQn7doLBTxdBtB6P+IAXGmnbDuuYWssSGxOtDoDE7S2Sg8ZcLVJtfQ5x5a8Hm0TaMGd3sGckWgpj/LST1ZVPVJKaFO1scrKZaPm02bY3Ul1v7PYv0g16Rg4d686PX/ubA42ipCGXaPh90eOUIK2nnDPmxL4nfHVg"}
+{"type":"tool_call","toolCallId":"call-9a9f0f2a-523e-4e09-9bfc-c90df9548ace-0","title":"read_file","kind":"read","status":"pending","toolName":"read_file","rawInput":{"target_file":"/tmp/ws/a.txt"},"content":[],"locations":[]}
+{"type":"tool_call_update","toolCallId":"call-9a9f0f2a-523e-4e09-9bfc-c90df9548ace-0","status":null,"content":[],"rawOutput":null,"locations":[{"path":"/tmp/ws/a.txt"}]}
+{"type":"tool_call_update","toolCallId":"call-9a9f0f2a-523e-4e09-9bfc-c90df9548ace-0","status":"completed","content":[{"type":"content","content":{"type":"text","text":"1→hello\n"}}],"rawOutput":{"type":"ReadFile","FileContent":{"content":"1→hello\n","content_concise":"1→hello\n","absolute_path":"/tmp/ws/a.txt","offset":null,"raw_output":"hello\n","total_lines":1}},"locations":[]}
+{"type":"text","data":"The"}
+{"type":"text","data":" file"}
+{"type":"text","data":" says"}
+{"type":"text","data":" hello"}
+{"type":"text","data":"."}
+{"type":"available_commands","tools":["run_terminal_command","read_file","search_replace"],"commands":[]}
+{"type":"usage","usage":{"input_tokens":342,"output_tokens":42,"cache_read_input_tokens":22016,"cache_creation_input_tokens":0,"reasoning_tokens":37},"signature":"hA40DMhVl1V3LzYKS6gh92BmXDGNbw97v0I0VovFPg38ewqTi+4s+9pzpRMMvNJTs8iryPoFi7NVlPekKgCpNh/yAPRNaSiJhLh594Qy/4q6FBfRtbgnHildBlUiVdX8jHUPlazU3Wn9QCaJG0KGPYSOd9bH4OcgnvIJEn4hdFDOi5bOeAX1MXCHo5WojVmqx744pVoKw0iUXoNELBUS8n7AzXeEnlain34VmSSWnATHjoobFCJKQ0uhVlcm"}
+{"type":"end","stopReason":"end_turn","sessionId":"3de270cb-e48b-467c-88f2-f78d2eca2b97","requestId":"6463bd44-3b31-4364-8128-ed778fe320cb","cwd":"/tmp/ws","usage":{"input_tokens":15418,"cache_read_input_tokens":29056,"cache_creation_input_tokens":0,"output_tokens":134,"reasoning_tokens":64,"total_tokens":44608},"num_turns":2,"total_cost_usd":0.092336,"total_cost_usd_ticks":923360000,"modelUsage":{"grok-4.7-build-fast":{"inputTokens":15418,"outputTokens":134,"cacheReadInputTokens":29056,"cacheCreationInputTokens":0,"modelCalls":2,"costUSD":0.092336}}}

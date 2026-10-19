@@ -1,7 +1,9 @@
 package adapter
 
 import (
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +91,43 @@ func TestEffortApplication(t *testing.T) {
 		if a.Capabilities().EffortMode != "" {
 			t.Fatal("unverified independent effort control", a.Name())
 		}
+	}
+}
+
+func TestParseCursorStream(t *testing.T) {
+	b, err := os.ReadFile("testdata/cursor/stream.ndjson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, session := parseCursorStream(string(b))
+	if out != "O arquivo `a.txt` contém apenas a palavra “hello”." || session != "c943abc3-0729-419a-a828-b5b3aec75982" {
+		t.Fatalf("%q %q", out, session)
+	}
+	// A run that died before "result" keeps the last full message, not deltas.
+	cut := string(b[:strings.LastIndex(string(b), `{"type":"result"`)])
+	if out, _ := parseCursorStream(cut); out != "O arquivo `a.txt` contém apenas a palavra “hello”." {
+		t.Fatalf("no result: %q", out)
+	}
+	if out, session := parseCursorStream("plain text reply\n"); out != "plain text reply" || session != "" {
+		t.Fatalf("non-JSON: %q %q", out, session)
+	}
+}
+
+func TestParseGrokStream(t *testing.T) {
+	b, err := os.ReadFile("testdata/grok/stream.ndjson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, session := parseGrokStream(string(b))
+	if out != "The file says hello." || session != "3de270cb-e48b-467c-88f2-f78d2eca2b97" {
+		t.Fatalf("%q %q", out, session)
+	}
+	narr := `{"type":"text","data":"Let me check."}` + "\n" + `{"type":"tool_call","title":"read_file"}` + "\n" + `{"type":"text","data":"Done."}` + "\n"
+	if out, _ := parseGrokStream(narr); out != "Done." {
+		t.Fatalf("narration leaked: %q", out)
+	}
+	endsOnTool := `{"type":"text","data":"Edited it."}` + "\n" + `{"type":"tool_call","title":"write"}` + "\n"
+	if out, _ := parseGrokStream(endsOnTool); out != "Edited it." {
+		t.Fatalf("ends on tool: %q", out)
 	}
 }

@@ -861,7 +861,19 @@ func (m *model) logView() string {
 		"↑↓ pgup/pgdn scroll · g top · G bottom · f follow · esc back  ·  "+follow,
 		"↑↓ scroll · g/G ends · f follow · esc back  ·  "+follow,
 		"↑↓ · f · esc"))
-	return left + strings.Repeat(" ", gap) + right + "\n" + dim.Render(strings.Repeat("─", m.w)) + "\n" + m.vp.View() + "\n" + ansi.Truncate(help, m.w, "…")
+	// The rule doubles as the fallback notice so the viewport keeps its height.
+	rule := dim.Render(strings.Repeat("─", m.w))
+	if n := len(r.Attempts); n > 0 && r.Status == store.Running {
+		a := r.Attempts[n-1]
+		class := a.ExitClass
+		if class == "" {
+			class = "failed"
+		}
+		note := fmt.Sprintf("── fell back after %s/%s (%s) ", a.Agent, a.Model, class)
+		note = ansi.Truncate(note, m.w, "… ")
+		rule = lipgloss.NewStyle().Foreground(cWarn).Render(note) + dim.Render(strings.Repeat("─", max(m.w-lipgloss.Width(note), 0)))
+	}
+	return left + strings.Repeat(" ", gap) + right + "\n" + rule + "\n" + m.vp.View() + "\n" + ansi.Truncate(help, m.w, "…")
 }
 
 func nonEmpty(ss ...string) []string {

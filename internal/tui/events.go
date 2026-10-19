@@ -52,6 +52,10 @@ func prettyKind(line string) ([]string, string) {
 		kind = "cmd-start"
 	} else if strings.Contains(line, `"type":"item.completed"`) && strings.Contains(line, `"command_execution"`) {
 		kind = "cmd-done"
+	} else if strings.Contains(line, `"type":"tool_call"`) && !strings.Contains(line, `"subtype":"completed"`) {
+		kind = "cmd-start"
+	} else if strings.Contains(line, `"type":"tool_call`) {
+		kind = "cmd-done"
 	} else if !strings.HasPrefix(strings.TrimSpace(line), "{") {
 		kind = "raw"
 	}
@@ -60,12 +64,18 @@ func prettyKind(line string) ([]string, string) {
 
 func prettyRaw(line string) []string {
 	line = strings.TrimRight(line, "\r\n ")
+	if strings.HasPrefix(line, "── dispatch:") {
+		return []string{sFile.Bold(true).Render(line)}
+	}
 	if !strings.HasPrefix(strings.TrimSpace(line), "{") {
 		return []string{dim.Render(line)}
 	}
 	var ev map[string]any
 	if json.Unmarshal([]byte(line), &ev) != nil || mstr(ev, "type") == "" {
 		return []string{dim.Render(line)}
+	}
+	if out, ok := prettyStream(ev); ok {
+		return out
 	}
 	item, _ := ev["item"].(map[string]any)
 	switch typ := mstr(ev, "type"); typ {
@@ -151,6 +161,7 @@ func prettyRaw(line string) []string {
 // command kept together with its result, and repeated raw lines (such as the
 // same config warning on every turn) shown once.
 func prettyAll(ls []string) []string {
+	ls = mergeDeltas(ls)
 	var out []string
 	seen := map[string]bool{}
 	prev := ""

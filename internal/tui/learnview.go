@@ -290,7 +290,7 @@ func (m *model) renderLearn() {
 	}
 
 	// 6. cooldowns
-	sec("Rate-limit memory", "Agents the router is avoiding after a rate limit. Expires on its own.")
+	sec("Rate-limit memory", "Agents the router is avoiding after a rate limit, and agent:provider pairs out of plan credits. Expires on its own.")
 	cd := m.opts.Store.Cooldowns(m.now)
 	if len(cd) == 0 {
 		out(dim.Render("  None. Every agent is available."))
@@ -304,7 +304,7 @@ func (m *model) renderLearn() {
 		for _, k := range names {
 			cr = append(cr, []string{text.Bold(true).Render(k), fmtDur(cd[k].Sub(m.now).Truncate(time.Second)), cd[k].Local().Format("15:04")})
 		}
-		out(grid([]string{"agent", "back in", "at"}, cr, 1))
+		out(grid([]string{"agent[:provider]", "back in", "at"}, cr, 1))
 	}
 
 	m.vp.SetContent(strings.TrimRight(b.String(), "\n"))
