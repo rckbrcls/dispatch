@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -360,4 +361,44 @@ func dispatchHome() string {
 		return filepath.Join(".", ".dispatch")
 	}
 	return filepath.Join(u, ".dispatch")
+}
+
+// Check validates a verify config file the way a run would read it. A
+// missing file is an error: callers use it on a file they just wrote.
+func Check(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var f fileConfig
+	if err := json.Unmarshal(b, &f); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	_, err = normalize(path, f.Checks)
+	return err
+}
+
+// Describe lists the checks configured at path as "name: argv" lines.
+func Describe(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var f fileConfig
+	if err := json.Unmarshal(b, &f); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	cs, err := normalize(path, f.Checks)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, c := range cs {
+		req := "optional"
+		if c.Required {
+			req = "required"
+		}
+		out = append(out, fmt.Sprintf("%s [%s] %s", c.Name, req, strings.Join(c.Argv, " ")))
+	}
+	return out, nil
 }

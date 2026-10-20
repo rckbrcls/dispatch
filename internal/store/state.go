@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"dispatch/internal/pace"
@@ -155,6 +156,29 @@ func (s Store) Cooldowns(now time.Time) map[string]time.Time {
 func (s Store) SetCooldown(agent string, until, now time.Time) error {
 	c := s.Cooldowns(now)
 	c[agent] = until
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.dir(), "cooldowns.json"), b, 0o644)
+}
+
+// ClearCooldown drops the cooldown of one agent, or of every agent when
+// agent is empty.
+func (s Store) ClearCooldown(agent string, now time.Time) error {
+	c := s.Cooldowns(now)
+	if agent == "" {
+		c = map[string]time.Time{}
+	} else {
+		for k := range c {
+			if k == agent || strings.HasPrefix(k, agent+":") { // agent or agent:provider
+				delete(c, k)
+			}
+		}
+	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err

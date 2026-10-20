@@ -367,3 +367,25 @@ func writeSettingsAtomic(path string, root map[string]any) error {
 	tmpName = ""
 	return nil
 }
+
+// RegisteredCommand returns the command of our SessionStart hook in
+// settingsPath, or "" when it is not registered.
+func RegisteredCommand(settingsPath string) string {
+	root, err := readSettings(settingsPath)
+	if err != nil {
+		return ""
+	}
+	hooks, _ := root["hooks"].(map[string]any)
+	groups, _ := hooks[SessionStart].([]any)
+	for _, g := range groups {
+		group, _ := g.(map[string]any)
+		inner, _ := group["hooks"].([]any)
+		for _, h := range inner {
+			action, _ := h.(map[string]any)
+			if cmd, _ := action["command"].(string); IsHookCommand(cmd) {
+				return cmd
+			}
+		}
+	}
+	return ""
+}

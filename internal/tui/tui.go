@@ -28,6 +28,8 @@ type Options struct {
 	Root  string
 	// Exe is the dispatch binary used for the cancel key.
 	Exe string
+	// Version is the running release, shown next to the update check.
+	Version string
 }
 
 // Run blocks until the user quits.
@@ -83,6 +85,7 @@ type model struct {
 	setN       int // lines rendered so far in the settings page
 	setLine    int // line of the selected row
 	editOrig   string
+	busy       string // CLI command running in the background, "" when idle
 }
 
 func (m *model) Init() tea.Cmd {
@@ -112,6 +115,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.render()
 		}
+	case cliDoneMsg:
+		m.busy = ""
+		m.setMsg = msg.text
+		if msg.err != nil {
+			m.setMsg = "! " + msg.text
+		}
+		if m.settingsOn {
+			m.renderSettings()
+		}
+		return m, nil
 	case editDoneMsg:
 		m.finishEdit(msg)
 		return m, nil

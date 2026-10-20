@@ -261,3 +261,22 @@ func TestGetLatestLineExactAndPrefix(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestClearCooldown(t *testing.T) {
+	s := Store{Path: filepath.Join(t.TempDir(), "runs.jsonl")}
+	now := time.Now()
+	for _, a := range []string{"codex", "grok"} {
+		if err := s.SetCooldown(a, now.Add(time.Hour), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ClearCooldown("codex", now); err != nil {
+		t.Fatal(err)
+	}
+	if c := s.Cooldowns(now); len(c) != 1 || c["grok"].IsZero() {
+		t.Fatalf("after clearing codex: %v", c)
+	}
+	if err := s.ClearCooldown("", now); err != nil || len(s.Cooldowns(now)) != 0 {
+		t.Fatalf("clear all: %v %v", err, s.Cooldowns(now))
+	}
+}

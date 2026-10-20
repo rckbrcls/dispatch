@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"dispatch/internal/integration"
 	"dispatch/internal/tui"
 	"encoding/json"
 	"flag"
@@ -1713,37 +1714,23 @@ func onCmd(args []string) int {
 	if err != nil {
 		fatal(err)
 	}
-	if err := hook.SetEnabled(home(), true); err != nil {
-		fatal(err)
-	}
-	if err := installMissingSkills(u); err != nil {
-		fatal(err)
-	}
-	settingsPath := hook.SettingsPath(u)
-	installed, err := hook.IsInstalled(settingsPath)
+	exe, err := os.Executable()
 	if err != nil {
 		fatal(err)
 	}
-	if !installed {
-		execPath, err := os.Executable()
-		if err != nil {
-			fatal(err)
-		}
-		abs, err := filepath.Abs(execPath)
-		if err != nil {
-			fatal(err)
-		}
-		if err := hook.Install(settingsPath, abs); err != nil {
-			fatal(err)
-		}
-		fmt.Printf("+ hook         %s\n", settingsPath)
+	lines, err := integration.Enable(home(), u, exe)
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+	if err != nil {
+		fatal(err)
 	}
 	fmt.Println("dispatch: on (ligado)")
 	return 0
 }
 
 func offCmd(args []string) int {
-	if err := hook.SetEnabled(home(), false); err != nil {
+	if err := integration.Disable(home()); err != nil {
 		fatal(err)
 	}
 	fmt.Println("dispatch: off (desligado)")
@@ -1755,28 +1742,30 @@ func statusCmd(args []string) int {
 	if err != nil {
 		fatal(err)
 	}
-	enabled := hook.IsEnabled(home())
-	settingsPath := hook.SettingsPath(u)
-	hookInstalled, _ := hook.IsInstalled(settingsPath)
-	claudeDir := skill.Targets(u)["claude"].Dir
-	skillInstalled := skill.IsInstalled(claudeDir)
-
+	st := integration.Inspect(home(), u)
 	stateStr := "off (desligado)"
-	if enabled {
+	if st.Enabled {
 		stateStr = "on (ligado)"
 	}
 	hookStr := "not installed"
-	if hookInstalled {
+	if st.HookFound {
 		hookStr = "installed"
+		if st.HookProblem != "" {
+			hookStr = "BROKEN: " + st.HookProblem
+		}
 	}
-	skillStr := "not installed"
-	if skillInstalled {
-		skillStr = "installed"
-	}
-
 	fmt.Printf("dispatch: %s\n", stateStr)
 	fmt.Printf("hook:     %s\n", hookStr)
-	fmt.Printf("skill:    %s\n", skillStr)
+	for _, s := range st.Skills {
+		if !s.Present {
+			continue
+		}
+		v := "not installed"
+		if s.Installed {
+			v = "installed"
+		}
+		fmt.Printf("skill:    %-12s %s\n", s.Name, v)
+	}
 	return 0
 }
 
@@ -1830,48 +1819,6 @@ func contextCmd(args []string) int {
 	return 0
 }
 
-func installMissingSkills(u string) error {
-	targets := skill.Targets(u)
-	binaries := map[string]string{"claude": "claude"}
-	for _, a := range adapter.Known() {
-		binaries[a.Name()] = a.Binary()
-	}
-	var want []string
-	for name, bin := range binaries {
-		if _, err := exec.LookPath(bin); err == nil {
-			want = append(want, name)
-		}
-	}
-	hasClaude := false
-	for _, w := range want {
-		if w == "claude" {
-			hasClaude = true
-			break
-		}
-	}
-	if !hasClaude {
-		want = append(want, "claude")
-	}
-	sort.Strings(want)
-
-	done := map[string]bool{}
-	for _, name := range want {
-		t, ok := targets[name]
-		if !ok || done[t.Dir] {
-			continue
-		}
-		done[t.Dir] = true
-		if !skill.IsInstalled(t.Dir) {
-			path, err := skill.Install(t.Dir, false)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("+ %-12s %s\n", name, path)
-		}
-	}
-	return nil
-}
-
 // tuiCmd is what bare `dispatch` does: follow this repository's runs live.
 // Without a terminal it falls back to the usage text.
 func tuiCmd() int {
@@ -1884,7 +1831,7 @@ func tuiCmd() int {
 		root = r
 	}
 	exe, _ := os.Executable()
-	if err := tui.Run(tui.Options{Store: runsStore(), Root: root, Exe: exe}); err != nil {
+	if err := tui.Run(tui.Options{Store: runsStore(), Root: root, Exe: exe, Version: version}); err != nil {
 		fmt.Fprintln(os.Stderr, "dispatch:", err)
 		return 1
 	}

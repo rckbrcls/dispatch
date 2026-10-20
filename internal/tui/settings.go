@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,8 +19,10 @@ import (
 
 	"dispatch/internal/adapter"
 	"dispatch/internal/config"
+	"dispatch/internal/integration"
 	"dispatch/internal/subagent"
 	"dispatch/internal/tiers"
+	"dispatch/internal/verify"
 )
 
 // Settings tabs. The first three edit files; the last one is read-only.
@@ -27,9 +31,11 @@ const (
 	tabTiers
 	tabSubagents
 	tabAgents
+	tabIntegration
+	tabVerify
 )
 
-var settingsTabs = []string{"Config", "Tiers", "Subagents", "Agents"}
+var settingsTabs = []string{"Config", "Tiers", "Subagents", "Agents", "Integration", "Verify"}
 
 var priorities = []string{"", "speed", "balanced", "quality"}
 
@@ -44,6 +50,40 @@ type editState struct {
 }
 
 type editDoneMsg struct{ err error }
+
+// cliDoneMsg carries the output of a dispatch subcommand run in the
+// background (update check, tiers --check).
+type cliDoneMsg struct {
+	text string
+	err  error
+}
+
+// runCLI runs the dispatch binary with args off the UI thread. Output is
+// returned whether or not the command exits non-zero: `tiers --check` prints
+// its findings and exits 1.
+func (m *model) runCLI(label string, args ...string) tea.Cmd {
+	if m.opts.Exe == "" {
+		m.setMsg = "! dispatch binary path unknown"
+		return nil
+	}
+	if m.busy != "" {
+		m.setMsg = "! " + m.busy + " still running"
+		return nil
+	}
+	m.busy = label
+	m.setMsg = label + "…"
+	exe := m.opts.Exe
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, exe, args...).CombinedOutput()
+		text := strings.TrimSpace(string(out))
+		if text == "" && err != nil {
+			text = err.Error()
+		}
+		return cliDoneMsg{text: text, err: err}
+	}
+}
 
 // prompt is a one-line text input for values that are quicker to type than
 // to edit as JSON (a list entry, a timeout, a new profile name).
@@ -135,6 +175,8 @@ func (m *model) rowCount() int {
 		return len(p)
 	case tabAgents:
 		return len(adapter.Known())
+	case tabIntegration:
+		return 2 + len(m.integrationState().Skills)
 	}
 	return 0
 }
@@ -196,6 +238,8 @@ func (m *model) inlineKey(k string) bool {
 		return m.subagentsKey(k)
 	case tabAgents:
 		return m.agentsKey(k)
+	case tabIntegration:
+		return m.integrationKey(k)
 	}
 	return false
 }
@@ -220,6 +264,11 @@ func (m *model) agentsKey(k string) bool {
 		return false
 	}
 	d := ds[m.setRow]
+	switch k {
+	case "c", "C":
+		m.clearCooldown(k == "C")
+		return true
+	}
 	f, _ := config.Load(config.Path(m.home()))
 	bins := map[string]string{}
 	for a, p := range f.Binaries {
@@ -455,6 +504,8 @@ func (m *model) settingsPath() string {
 			return subagent.ProjectPath(m.root)
 		}
 		return filepath.Join(m.home(), "agents.json")
+	case tabVerify:
+		return verify.ConfigPath(m.root)
 	default:
 		if m.setProject && m.root != "" {
 			return filepath.Join(m.root, ".dispatch", "config.json")
@@ -502,6 +553,10 @@ func (m *model) settingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if cmd, ok := m.cliKey(k); ok {
+		m.renderSettings()
+		return m, cmd
+	}
 	if m.setTab != tabConfig && m.inlineKey(k) {
 		m.renderSettings()
 		return m, nil
@@ -518,7 +573,7 @@ func (m *model) settingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setTab, m.setRow = (m.setTab+1)%len(settingsTabs), 0
 	case "shift+tab", "left", "h":
 		m.setTab, m.setRow = (m.setTab+len(settingsTabs)-1)%len(settingsTabs), 0
-	case "1", "2", "3", "4":
+	case "1", "2", "3", "4", "5", "6":
 		m.setTab = int(k[0] - '1')
 		m.setRow = 0
 	case "p":
@@ -535,7 +590,7 @@ func (m *model) settingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.configEnter()
 		}
 	case "e":
-		if m.setTab != tabAgents {
+		if m.setTab != tabAgents && m.setTab != tabIntegration {
 			return m, m.beginEdit()
 		}
 	default:
@@ -647,6 +702,14 @@ func (m *model) beginEdit() tea.Cmd {
 	case tabSubagents:
 		seed = []byte(subagent.Example)
 		check = checkSubagents
+	case tabVerify:
+		if m.root == "" {
+			m.setMsg = "! verify.json belongs to a repository; open dispatch inside one"
+			m.renderSettings()
+			return nil
+		}
+		seed = []byte(verify.Example)
+		check = verify.Check
 	default:
 		seed = []byte("{\n  \"priority\": \"balanced\"\n}\n")
 		perm = 0o600
@@ -793,6 +856,10 @@ func (m *model) renderSettings() {
 		m.settingsTiers(out, w)
 	case tabSubagents:
 		m.settingsSubagents(out, w)
+	case tabIntegration:
+		m.settingsIntegration(out, w)
+	case tabVerify:
+		m.settingsVerify(out, w)
 	default:
 		m.settingsAgents(out, w)
 	}
@@ -910,7 +977,7 @@ func (m *model) settingsTiers(out func(string), w int) {
 	}
 	m.setLine = m.setN + 3 + m.setRow
 	out(grid([]string{"", "tier", "agent", "model", "provider", "speed", "strength", "efforts"}, rows, 5, 6))
-	out(dim.Render("  s/S speed ±  t/T strength ±  J/K reorder  a add  x remove\n  g agent  m model  o provider  f efforts · order = preference · e edits the file"))
+	out(dim.Render("  s/S speed ±  t/T strength ±  J/K reorder  a add  x remove\n  g agent  m model  o provider  f efforts · order = preference · c checks installed agents/models · e edits the file"))
 	if ps := t.CapabilityProblems(adapter.Known()); len(ps) > 0 {
 		out("")
 		for _, p := range ps {
@@ -975,10 +1042,22 @@ func (m *model) settingsAgents(out func(string), w int) {
 	out("")
 	var rows [][]string
 	var notes []string
+	cds := m.opts.Store.Cooldowns(time.Now())
 	for i, d := range adapter.Detect() {
 		mark := " "
 		if i == m.setRow {
 			mark = accent.Render("▸")
+		}
+		cd := "—"
+		var parts []string
+		for k, until := range cds {
+			if k == d.Agent || strings.HasPrefix(k, d.Agent+":") {
+				parts = append(parts, strings.TrimPrefix(strings.TrimPrefix(k, d.Agent), ":")+" until "+until.Local().Format("15:04"))
+			}
+		}
+		if len(parts) > 0 {
+			sort.Strings(parts)
+			cd = lipgloss.NewStyle().Foreground(cWarn).Render(strings.TrimSpace(strings.Join(parts, ", ")))
 		}
 		state := map[string]string{"configured": "configured", "PATH": "on PATH", "found": "found, not in use", "missing": "not installed", "invalid": "invalid path"}[d.Source]
 		col := cOK
@@ -994,17 +1073,17 @@ func (m *model) settingsAgents(out func(string), w int) {
 		if d.Source == "invalid" {
 			path = shortHome(d.Configured)
 		}
-		rows = append(rows, []string{mark, d.Agent, d.Default, lipgloss.NewStyle().Foreground(col).Render(state), path})
+		rows = append(rows, []string{mark, d.Agent, d.Default, lipgloss.NewStyle().Foreground(col).Render(state), cd, path})
 		if d.Suggest != "" && d.Source == "found" {
 			notes = append(notes, d.Agent+": press d to use "+shortHome(d.Suggest))
 		}
 	}
 	m.setLine = m.setN + 3 + m.setRow
-	out(grid([]string{"", "agent", "binary", "state", "path"}, rows))
+	out(grid([]string{"", "agent", "binary", "state", "cooldown", "path"}, rows))
 	for _, n := range notes {
 		out(lipgloss.NewStyle().Foreground(cWarn).Render("  ⚠ " + n))
 	}
-	out(dim.Render("  b set path  d use detected location  x back to default · only CLIs dispatch has an adapter for are listed"))
+	out(dim.Render("  b set path  d use detected location  x back to default  c clear cooldown  C clear all · only CLIs dispatch has an adapter for are listed"))
 }
 
 func (m *model) settingsView() string {
@@ -1021,14 +1100,16 @@ func (m *model) settingsView() string {
 		help = "enter reopen editor · esc discard"
 	case m.setTab == tabConfig:
 		help = fit(m.w,
-			"tab/1-4 section · ↑↓ select · enter change · e edit JSON · p scope · , back · q quit",
+			"tab/1-6 section · ↑↓ select · enter change · e edit JSON · p scope · , back · q quit",
 			"tab section · ↑↓ · enter · e edit · p scope · , back",
 			"tab · ↑↓ · enter · e · p · ,")
+	case m.setTab == tabIntegration:
+		help = fit(m.w, "tab/1-6 section · ↑↓ select · enter toggle/install · x remove hook · f force skill · t test hook · u/U update · , back", "tab · ↑↓ · enter · x · f · t · ,")
 	case m.setTab == tabAgents:
-		help = fit(m.w, "tab/1-4 section · ↑↓ select · b path · d detected · x default · , back · q quit", "tab · ↑↓ · b · d · x · ,")
+		help = fit(m.w, "tab/1-6 section · ↑↓ select · b path · d detected · x default · c/C cooldown · , back · q quit", "tab · ↑↓ · b · d · x · c · ,")
 	default:
 		help = fit(m.w,
-			"tab/1-4 section · ↑↓ select · keys below · e edit in $EDITOR · , back · q quit",
+			"tab/1-6 section · ↑↓ select · keys below · e edit in $EDITOR · , back · q quit",
 			"tab section · ↑↓ · e edit · , back",
 			"tab · ↑↓ · e · ,")
 	}
@@ -1037,4 +1118,174 @@ func (m *model) settingsView() string {
 		body += "\n" + accent.Render("▸ "+m.prompt.label+": ") + string(m.prompt.val) + accent.Render("▏")
 	}
 	return title + "\n" + dim.Render(strings.Repeat("─", m.w)) + "\n" + body + "\n" + ansi.Truncate(dim.Render(help), m.w, "…")
+}
+
+// --- Integration: on/off, hook, skills ---
+
+func (m *model) userHome() string {
+	h, _ := os.UserHomeDir()
+	return h
+}
+
+func (m *model) integrationState() integration.State {
+	return integration.Inspect(m.home(), m.userHome())
+}
+
+// integrationKey: row 0 is the on/off flag, row 1 the hook, the rest skills.
+func (m *model) integrationKey(k string) bool {
+	st := m.integrationState()
+	home, uh := m.home(), m.userHome()
+	switch k {
+	case "t":
+		out, err := integration.TestHook(st.HookCommand)
+		switch {
+		case err != nil:
+			m.setMsg = "! hook failed: " + err.Error()
+		case out == "":
+			m.setMsg = "! hook ran but printed nothing: dispatch is off, so sessions get no context"
+		default:
+			m.setMsg = "hook printed: " + oneLine(out, 160)
+		}
+		return true
+	case "enter", " ":
+		switch {
+		case m.setRow == 0:
+			if st.Enabled {
+				m.report(integration.Disable(home), "dispatch off: new sessions get no context")
+			} else {
+				_, err := integration.Enable(home, uh, m.opts.Exe)
+				m.report(err, "dispatch on: flag, skills and hook set; applies to new Claude sessions")
+			}
+		case m.setRow == 1:
+			_, err := integration.InstallHook(uh, m.opts.Exe)
+			m.report(err, "hook registered in "+shortHome(st.SettingsPath))
+		case m.setRow-2 < len(st.Skills):
+			s := st.Skills[m.setRow-2]
+			p, err := integration.InstallSkill(uh, s.Name, false)
+			m.report(err, "skill written to "+shortHome(p))
+		}
+		return true
+	case "f":
+		if i := m.setRow - 2; i >= 0 && i < len(st.Skills) {
+			p, err := integration.InstallSkill(uh, st.Skills[i].Name, true)
+			m.report(err, "skill rewritten at "+shortHome(p))
+			return true
+		}
+	case "x":
+		if m.setRow == 1 {
+			m.report(integration.RemoveHook(uh), "hook removed from "+shortHome(st.SettingsPath))
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) settingsIntegration(out func(string), w int) {
+	st := m.integrationState()
+	out(heading("Integration", w))
+	out(dim.Render("  how Claude Code (and other callers) learn that dispatch exists"))
+	out(dim.Render("  version " + coalesce(m.opts.Version, "unknown") + " · u checks for a newer release · U installs it and refreshes skills"))
+	out("")
+	ok := func(good bool, yes, no string) string {
+		if good {
+			return lipgloss.NewStyle().Foreground(cOK).Render(yes)
+		}
+		return lipgloss.NewStyle().Foreground(cBad).Render(no)
+	}
+	mark := func(i int) string {
+		if i == m.setRow {
+			m.setLine = m.setN
+			return accent.Render("▸ ")
+		}
+		return "  "
+	}
+	out(fmt.Sprintf("%s%-18s %s", mark(0), "dispatch", ok(st.Enabled, "on", "off — the hook prints nothing")))
+	hookVal := ok(false, "", "not registered")
+	if st.HookFound {
+		hookVal = ok(st.HookProblem == "", "registered", "BROKEN: "+st.HookProblem)
+	}
+	out(fmt.Sprintf("%s%-18s %s", mark(1), "SessionStart hook", hookVal))
+	if st.HookCommand != "" {
+		out(dim.Render("    " + st.HookCommand))
+	}
+	out(dim.Render("    " + shortHome(st.SettingsPath)))
+	out("")
+	out(heading("Skills", w))
+	for i, s := range st.Skills {
+		val := ok(s.Installed, "installed", "not installed")
+		note := ""
+		if !s.Present {
+			note = dim.Render("  (CLI not on PATH)")
+		}
+		out(fmt.Sprintf("%s%-18s %s%s", mark(2+i), s.Name, val, note))
+		out(dim.Render("    " + shortHome(s.Dir)))
+	}
+	out("")
+	switch {
+	case !st.Enabled:
+		out(lipgloss.NewStyle().Foreground(cWarn).Render(wrapHang("  ⚠ dispatch is off: Claude gets only the skill description, never the session reminder. enter on the first row turns it on.", w)))
+	case !st.HookFound:
+		out(lipgloss.NewStyle().Foreground(cWarn).Render(wrapHang("  ⚠ no hook registered: enter on the hook row registers it.", w)))
+	}
+	out(dim.Render("  the hook injects one line at session start; the skill is what teaches the usage.\n  changes apply to NEW Claude Code sessions"))
+}
+
+// --- Verify ---
+
+func (m *model) settingsVerify(out func(string), w int) {
+	out(heading("Verify", w))
+	if m.root == "" {
+		out(dim.Render("  open dispatch inside a repository to edit its verify.json"))
+		return
+	}
+	path := m.settingsPath()
+	out(dim.Render("  " + shortHome(path) + "  (checks run after every write run, before merge)"))
+	out("")
+	lines, err := verify.Describe(path)
+	switch {
+	case err != nil && errors.Is(err, os.ErrNotExist):
+		if verify.HasConfig(m.root) {
+			out(dim.Render("  no file: built-in Go checks (vet, test) are used · e starts a file from the example"))
+		} else {
+			out(dim.Render("  no file and no go.mod: runs end \"unverified\" · e starts a file from the example"))
+		}
+	case err != nil:
+		out(lipgloss.NewStyle().Foreground(cBad).Render("  ✗ " + err.Error()))
+		out(dim.Render("  press e to fix it in your editor"))
+	default:
+		for _, l := range lines {
+			out("  " + l)
+		}
+		if len(lines) == 0 {
+			out(dim.Render("  file has no checks"))
+		}
+	}
+	out("")
+	out(dim.Render("  e edits the file (validated before saving)"))
+}
+
+// cliKey handles the keys that start a background dispatch command.
+func (m *model) cliKey(k string) (tea.Cmd, bool) {
+	switch {
+	case m.setTab == tabTiers && k == "c":
+		return m.runCLI("checking tiers against installed agents and models", "tiers", "--check"), true
+	case m.setTab == tabIntegration && k == "u":
+		return m.runCLI("checking for updates", "update", "--check"), true
+	case m.setTab == tabIntegration && k == "U":
+		return m.runCLI("updating", "update"), true
+	}
+	return nil, false
+}
+
+// clearCooldown drops the selected agent's cooldown, or all of them.
+func (m *model) clearCooldown(all bool) {
+	agent := ""
+	if !all {
+		ds := adapter.Detect()
+		if m.setRow >= len(ds) {
+			return
+		}
+		agent = ds[m.setRow].Agent
+	}
+	m.report(m.opts.Store.ClearCooldown(agent, time.Now()), "cooldown cleared")
 }
