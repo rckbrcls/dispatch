@@ -300,6 +300,35 @@ func TestAntigravityClaudeDiscovery(t *testing.T) {
 	}
 }
 
+func TestDefaultAntigravityClaudeTiers(t *testing.T) {
+	d, _, _ := routingDeps(t)
+	a := d.Adapters[0].(routingFake)
+	a.fake.name = "antigravity"
+	a.caps = (adapter.Antigravity{}).Capabilities()
+	a.models = []adapter.Model{
+		{ID: "claude-sonnet-5-5-low"}, {ID: "claude-sonnet-5-5-medium"}, {ID: "claude-sonnet-5-5-high"},
+		{ID: "claude-opus-5-5-low"}, {ID: "claude-opus-5-5-medium"}, {ID: "claude-opus-5-5-high"},
+	}
+	d.Adapters = []adapter.Adapter{a}
+	d.Table = tiers.Default()
+	for _, discover := range []bool{false, true} {
+		d.Policy.Discover = discover
+		for _, tt := range []struct {
+			tier  adapter.Tier
+			model string
+		}{
+			{adapter.TierEasy, "claude-sonnet-5-5-low"},
+			{adapter.TierNormal, "claude-sonnet-5-5-medium"},
+			{adapter.TierHard, "claude-opus-5-5-high"},
+		} {
+			r, err := d.Route(context.Background(), Options{Tier: tt.tier, Filters: store.Filters{Agent: "antigravity", Provider: "anthropic"}})
+			if err != nil || r.Winner == nil || r.Winner.Model != tt.model || r.Winner.Agent != "antigravity" || r.Winner.Provider != "anthropic" {
+				t.Fatalf("tier=%s discover=%v: %+v, %v", tt.tier, discover, r, err)
+			}
+		}
+	}
+}
+
 func TestAntigravityCachedQuotaGroups(t *testing.T) {
 	d, _, _ := routingDeps(t)
 	a := d.Adapters[0].(routingFake)
