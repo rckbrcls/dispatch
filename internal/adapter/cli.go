@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"regexp"
 	"strings"
 
 	"dispatch/internal/sandbox"
@@ -51,10 +50,6 @@ func (c cliAdapter) Resume(ctx context.Context, req Request, model string) (Resu
 
 func (c cliAdapter) Quota(context.Context) (Quota, error) { return Quota{}, ErrNoQuota }
 
-// claudeModel matches Anthropic model IDs. Routing Claude models through
-// other vendors' CLIs is refused by policy.
-var claudeModel = regexp.MustCompile(`(?i)claude|sonnet|opus|haiku|fable`)
-
 func (c cliAdapter) Models(ctx context.Context) ([]Model, error) {
 	cmd := exec.CommandContext(ctx, c.Binary(), c.listArgs...)
 	cmd.Env = sandbox.Environ()
@@ -64,7 +59,7 @@ func (c cliAdapter) Models(ctx context.Context) ([]Model, error) {
 	}
 	var models []Model
 	for _, id := range c.parseModels(string(out)) {
-		if !claudeModel.MatchString(id) {
+		if AllowedModel(c.name, id) {
 			models = append(models, Model{ID: id})
 		}
 	}
@@ -72,7 +67,7 @@ func (c cliAdapter) Models(ctx context.Context) ([]Model, error) {
 }
 
 func (c cliAdapter) Run(ctx context.Context, req Request, model string) (Result, error) {
-	if claudeModel.MatchString(model) {
+	if !AllowedModel(c.name, model) {
 		return Result{}, fmt.Errorf("%s: claude models are not routed through this CLI", c.name)
 	}
 	if req.Timeout > 0 {

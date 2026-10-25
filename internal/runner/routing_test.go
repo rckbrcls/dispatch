@@ -210,6 +210,127 @@ func TestOutsideTableAndSafetyConstraints(t *testing.T) {
 	}
 }
 
+func TestClaudeRoutingByAdapter(t *testing.T) {
+	for _, agent := range []string{"antigravity", "cursor", "codex", "grok", "opencode"} {
+		t.Run(agent, func(t *testing.T) {
+			d, _, _ := routingDeps(t)
+			a := d.Adapters[0].(routingFake)
+			a.fake.name = agent
+			if agent == "antigravity" {
+				a.caps = (adapter.Antigravity{}).Capabilities()
+			}
+			d.Adapters = []adapter.Adapter{a}
+			for _, model := range []string{"claude-opus-high", "claude-opus", "x-Sonnet-y"} {
+				d.Table = tiers.Table{Tiers: map[adapter.Tier][]tiers.Entry{
+					adapter.TierHard: {{Agent: agent, Model: model}},
+				}}
+				r, err := d.Route(context.Background(), Options{Tier: adapter.TierHard, Filters: store.Filters{Agent: agent, Provider: "anthropic"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if agent == "antigravity" {
+					if r.Winner == nil || r.Winner.Model != model || r.Winner.Provider != "anthropic" {
+						t.Fatalf("%s: %+v", model, r)
+					}
+				} else if r.Winner != nil || !strings.Contains(r.Reason, "Claude models refused in third-party CLIs") {
+					t.Fatalf("%s: %+v", model, r)
+				}
+				// Explicit models also work without tier entries or a model list.
+				d.Table = tiers.Table{}
+				r, err = d.Route(context.Background(), Options{Filters: store.Filters{Agent: agent, Model: model}})
+				if err != nil || (r.Winner != nil) != (agent == "antigravity") {
+					t.Fatal(r, err)
+				}
+				if r.Winner != nil && r.Winner.Model != model {
+					t.Fatal("invented a model variant", r)
+				}
+			}
+		})
+	}
+}
+
+func TestAntigravityClaudePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		policy config.File
+		want   string
+	}{
+		{"allowed", config.File{Allow: config.Rules{Providers: []string{"anthropic"}, Models: []string{"claude-opus"}, Agents: []string{"antigravity"}}}, ""},
+		{"deny provider", config.File{Deny: config.Rules{Providers: []string{"anthropic"}}}, "deny.providers"},
+		{"deny base model", config.File{Deny: config.Rules{Models: []string{"claude-opus"}}}, "deny.models"},
+		{"deny agent", config.File{Deny: config.Rules{Agents: []string{"antigravity"}}}, "deny.agents"},
+		{"allow provider", config.File{Allow: config.Rules{Providers: []string{"google"}}}, "allow.providers"},
+		{"allow model", config.File{Allow: config.Rules{Models: []string{"gemini-fast"}}}, "allow.models"},
+		{"allow agent", config.File{Allow: config.Rules{Agents: []string{"codex"}}}, "allow.agents"},
+		{"deny wins", config.File{Allow: config.Rules{Providers: []string{"anthropic"}}, Deny: config.Rules{Providers: []string{"anthropic"}}}, "deny.providers"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, _ := routingDeps(t)
+			a := d.Adapters[0].(routingFake)
+			a.fake.name = "antigravity"
+			a.caps = (adapter.Antigravity{}).Capabilities()
+			d.Adapters = []adapter.Adapter{a}
+			d.Table = tiers.Table{Tiers: map[adapter.Tier][]tiers.Entry{adapter.TierHard: {{Agent: "antigravity", Model: "claude-opus-high"}}}}
+			d.Policy = tt.policy
+			r, err := d.Route(context.Background(), Options{Tier: adapter.TierHard, Filters: store.Filters{Agent: "antigravity", Provider: "anthropic", Model: "claude-opus-high", Relax: true}})
+			if err != nil || (r.Winner != nil) != (tt.want == "") || (tt.want != "" && !strings.Contains(r.Reason, tt.want)) {
+				t.Fatal(r, err)
+			}
+		})
+	}
+}
+
+func TestAntigravityClaudeDiscovery(t *testing.T) {
+	d, _, _ := routingDeps(t)
+	a := d.Adapters[0].(routingFake)
+	a.fake.name = "antigravity"
+	a.caps = (adapter.Antigravity{}).Capabilities()
+	a.models = []adapter.Model{{ID: "claude-opus"}, {ID: "gemini-fast-low"}}
+	d.Adapters = []adapter.Adapter{a}
+	d.Policy.Discover = true
+	cs, why := d.selectCandidatesWith(context.Background(), Options{Tier: adapter.TierNormal, Filters: store.Filters{Provider: "anthropic", Agent: "antigravity"}})
+	if len(cs) != 1 || cs[0].Model != "claude-opus" || cs[0].Provider != "anthropic" || cs[0].Effort != "" || cs[0].Note != "discovered" {
+		t.Fatal(cs, why)
+	}
+	a.models = nil
+	d.Adapters[0] = a
+	cs, _ = d.selectCandidatesWith(context.Background(), Options{Tier: adapter.TierNormal, Filters: store.Filters{Provider: "anthropic", Agent: "antigravity"}})
+	if len(cs) != 0 {
+		t.Fatal("empty discovery invented models", cs)
+	}
+}
+
+func TestAntigravityCachedQuotaGroups(t *testing.T) {
+	d, _, _ := routingDeps(t)
+	a := d.Adapters[0].(routingFake)
+	a.fake.name = "antigravity"
+	a.caps = (adapter.Antigravity{}).Capabilities()
+	d.Adapters = []adapter.Adapter{a}
+	d.Table = tiers.Table{Tiers: map[adapter.Tier][]tiers.Entry{adapter.TierHard: {
+		{Agent: "antigravity", Model: "claude-opus-high"},
+		{Agent: "antigravity", Model: "gemini-fast-high"},
+		{Agent: "antigravity", Model: "gpt-small-high"},
+	}}}
+	for key, used := range map[string]float64{"antigravity:Claude and GPT models": 70, "antigravity:Gemini Models": 10} {
+		if _, err := d.Store.RecordSnapshot(key, pace.Snapshot{UsedPercent: used, WindowMinutes: 10080, ResetsAt: d.Now().Add(84 * time.Hour), SampledAt: d.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cs, why := d.selectCandidates(Options{Tier: adapter.TierHard})
+	if len(cs) != 3 {
+		t.Fatal(cs, why)
+	}
+	for _, c := range d.evaluate(context.Background(), cs, false) {
+		key, used := "antigravity:Claude and GPT models", 70.0
+		if c.Provider == "google" {
+			key, used = "antigravity:Gemini Models", 10
+		}
+		if c.Quota == nil || c.Quota.Key != key || c.Quota.UsedPercent != used {
+			t.Fatalf("%s: %+v", c.Model, c.Quota)
+		}
+	}
+}
+
 func TestSuffixEffortAndReadonly(t *testing.T) {
 	d, _, _ := routingDeps(t)
 	a := d.Adapters[0].(routingFake)

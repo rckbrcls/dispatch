@@ -113,7 +113,7 @@ Tier é opcional com provider/model. Effort incompatível é recusado. A priorid
 
 - **Log verboso é só do usuário:** o TUI (`dispatch` sem argumentos) mostra a saída completa do agente; ela fica em `~/.dispatch/logs/*.agent.log`. Não leia esses arquivos (gasta tokens): use só o resumo JSON.
 - **Sem delegação recursiva:** dentro de um run do dispatch o comando é recusado (`DISPATCH_DEPTH`).
-- **Modelos Claude não rodam em CLIs de terceiros:** o dispatch os recusa.
+- **Modelos Claude:** o dispatch os recusa em Cursor, Codex, Grok e OpenCode; permite pelo Antigravity (`agy`), com provider `anthropic` e quota Claude+GPT. Use um ID listado por `agy models` em `tiers.json` (no tier desejado) ou `--model <id> --agent antigravity`; a descoberta opcional acrescenta modelos apenas ao tier `normal`.
 - **Não reenvie igual:** `FAILED` com candidatos esgotados significa melhorar o brief (1–2 frases) ou
   subir um tier. `TIMED_OUT`/`CANCELLED` não fazem fallback.
 - **Um escritor por diretório** e sem `push`, deploy ou segredos no brief.

@@ -212,6 +212,9 @@ func (Codex) Models(ctx context.Context) ([]Model, error) {
 		if id == "" {
 			id = m.ID
 		}
+		if !AllowedModel("codex", id) {
+			continue
+		}
 		// Tier assignment lives in the declarative tier table, not here.
 		out = append(out, Model{ID: id})
 	}
@@ -221,6 +224,9 @@ func (Codex) Models(ctx context.Context) ([]Model, error) {
 // Run executes `codex exec` (or `codex exec resume`), returning the agent's
 // last message. The session id comes from the --json thread.started event.
 func (Codex) Run(ctx context.Context, req Request, model string) (Result, error) {
+	if !AllowedModel("codex", model) {
+		return Result{}, fmt.Errorf("codex: claude models are not routed through this CLI")
+	}
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)

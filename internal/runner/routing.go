@@ -172,7 +172,7 @@ func (d Deps) selectCandidatesWith(ctx context.Context, o Options) ([]router.Can
 			reject("agent unavailable")
 			continue
 		}
-		if !adapter.AllowedModel(e.Model) {
+		if !adapter.AllowedModel(e.Agent, e.Model) {
 			reject("Claude models refused in third-party CLIs")
 			continue
 		}
@@ -200,7 +200,9 @@ func (d Deps) selectCandidatesWith(ctx context.Context, o Options) ([]router.Can
 		if effort == "" {
 			effort = adapter.EffortOf(model)
 		}
-		if effort == "" && caps.EffortMode != "" {
+		// Suffix-only controls need declared efforts; preserve a discovered ID
+		// without a suffix instead of inventing an unsupported model variant.
+		if effort == "" && caps.EffortMode != "" && (caps.EffortMode != "model-suffix" || len(e.Efforts) > 0 || len(caps.Efforts) > 0) {
 			switch o.Tier {
 			case adapter.TierEasy:
 				effort = "low"

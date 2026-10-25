@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"dispatch/internal/adapter"
 	"dispatch/internal/hook"
 	"dispatch/internal/skill"
 )
@@ -598,6 +599,41 @@ func TestRouteCommandDoesNotRunCLIsOrWriteState(t *testing.T) {
 	}
 	if len(before) != len(after) {
 		t.Fatal("state directory changed")
+	}
+}
+
+func TestRouteAntigravityClaude(t *testing.T) {
+	h, _ := setupTestEnv(t)
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(h, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	table := `{"tiers":{"hard":[{"agent":"antigravity","model":"claude-opus-high"}]}}`
+	if err := os.WriteFile(filepath.Join(h, "tiers.json"), []byte(table), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "called")
+	t.Setenv("DISPATCH_TEST_CALLED", marker)
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\nprintf called > \"$DISPATCH_TEST_CALLED\"\nexit 99\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter.SetBinaries(nil)
+	t.Cleanup(func() { adapter.SetBinaries(nil) })
+	t.Setenv("PATH", dir)
+	for _, args := range [][]string{
+		{"--agent", "antigravity", "--provider", "anthropic", "--tier", "hard", "--json"},
+		{"--model", "claude-opus", "--agent", "antigravity", "--json"},
+	} {
+		var code int
+		out := captureStdout(t, func() { code = runCommand(args, true) })
+		var report runner.RouteReport
+		if err := json.Unmarshal([]byte(out), &report); err != nil || code != 0 || report.Winner == nil || report.Winner.Agent != "antigravity" || report.Winner.Provider != "anthropic" {
+			t.Fatalf("%v: code=%d out=%s err=%v", args, code, out, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("route invoked CLI")
 	}
 }
 
