@@ -1,6 +1,12 @@
 package adapter
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+// claudeModel matches Anthropic model IDs, including family aliases.
+var claudeModel = regexp.MustCompile(`(?i)claude|sonnet|opus|haiku|fable`)
 
 // effortSuffixes are the model-name tails that name an effort level.
 var effortSuffixes = map[string]bool{
@@ -30,7 +36,7 @@ func ProviderOf(agent, model string) string {
 	switch {
 	case strings.Contains(m, "gemini"):
 		return "google"
-	case strings.Contains(m, "claude"):
+	case claudeModel.MatchString(m):
 		return "anthropic"
 	case strings.Contains(m, "grok"):
 		return "xai"
@@ -67,4 +73,8 @@ func BaseModel(m string) string {
 	}
 	return m
 }
-func AllowedModel(m string) bool { return !claudeModel.MatchString(m) }
+
+// AllowedModel permits Claude only through its supported Antigravity host.
+func AllowedModel(agent, model string) bool {
+	return agent == "antigravity" || !claudeModel.MatchString(model)
+}

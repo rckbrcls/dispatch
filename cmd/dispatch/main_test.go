@@ -15,8 +15,10 @@ import (
 	"strings"
 	"testing"
 
+	"dispatch/internal/adapter"
 	"dispatch/internal/hook"
 	"dispatch/internal/skill"
+	"dispatch/internal/tiers"
 )
 
 func captureStdout(t *testing.T, fn func()) string {
@@ -598,6 +600,73 @@ func TestRouteCommandDoesNotRunCLIsOrWriteState(t *testing.T) {
 	}
 	if len(before) != len(after) {
 		t.Fatal("state directory changed")
+	}
+}
+
+func TestRouteAntigravityClaude(t *testing.T) {
+	h, _ := setupTestEnv(t)
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(h, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	table := `{"tiers":{"hard":[{"agent":"antigravity","model":"claude-opus-high"}]}}`
+	if err := os.WriteFile(filepath.Join(h, "tiers.json"), []byte(table), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "called")
+	t.Setenv("DISPATCH_TEST_CALLED", marker)
+	if err := os.WriteFile(filepath.Join(dir, "agy"), []byte("#!/bin/sh\nprintf called > \"$DISPATCH_TEST_CALLED\"\nexit 99\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter.SetBinaries(nil)
+	t.Cleanup(func() { adapter.SetBinaries(nil) })
+	t.Setenv("PATH", dir)
+	for _, args := range [][]string{
+		{"--agent", "antigravity", "--provider", "anthropic", "--tier", "hard", "--json"},
+		{"--model", "claude-opus", "--agent", "antigravity", "--json"},
+	} {
+		var code int
+		out := captureStdout(t, func() { code = runCommand(args, true) })
+		var report runner.RouteReport
+		if err := json.Unmarshal([]byte(out), &report); err != nil || code != 0 || report.Winner == nil || report.Winner.Agent != "antigravity" || report.Winner.Provider != "anthropic" {
+			t.Fatalf("%v: code=%d out=%s err=%v", args, code, out, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("route invoked CLI")
+	}
+}
+
+func TestCheckDefaultAntigravityTiers(t *testing.T) {
+	setupTestEnv(t)
+	t.Chdir(t.TempDir())
+	table := tiers.Default()
+	for tier, entries := range table.Tiers {
+		table.Tiers[tier] = nil
+		for _, e := range entries {
+			if e.Agent == "antigravity" {
+				table.Tiers[tier] = append(table.Tiers[tier], e)
+			}
+		}
+	}
+	path := filepath.Join(t.TempDir(), "agy")
+	adapter.SetBinaries(map[string]string{"antigravity": path})
+	t.Cleanup(func() { adapter.SetBinaries(nil) })
+	for _, listed := range []bool{true, false} {
+		models := "gemini-3.8-flash-low\tGemini\ngemini-3.8-flash-high\tGemini\nclaude-sonnet-5-5-low\tClaude\nclaude-sonnet-5-5-medium\tClaude\n"
+		if listed {
+			models += "claude-opus-5-5-high\tClaude\n"
+		}
+		script := "#!/bin/sh\n[ \"$1\" = models ] || exit 99\ncat <<'MODELS'\n" + models + "MODELS\n"
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		var code int
+		out := captureStdout(t, func() { code = checkTiers(table) })
+		if (listed && (code != 0 || !strings.Contains(out, "ok:"))) || (!listed && (code != 1 || !strings.Contains(out, `does not list model "claude-opus-5-5-high"`))) {
+			t.Fatalf("listed=%v code=%d out=%s", listed, code, out)
+		}
 	}
 }
 

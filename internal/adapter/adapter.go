@@ -70,7 +70,7 @@ type Result struct {
 }
 
 // ModelQuoter is implemented by adapters whose quota differs per model
-// (e.g. Antigravity's Gemini vs third-party groups). It returns a quota for
+// (e.g. Antigravity's Gemini vs Claude+GPT groups). It returns a quota for
 // each requested model it can resolve.
 type ModelQuoter interface {
 	ModelQuotas(ctx context.Context, models []string) (map[string]Quota, error)

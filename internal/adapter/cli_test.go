@@ -1,7 +1,9 @@
 package adapter
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,10 +26,82 @@ func TestClaudeFilter(t *testing.T) {
 		if !claudeModel.MatchString(id) {
 			t.Errorf("%s should be filtered", id)
 		}
+		for _, agent := range []string{"antigravity", "cursor", "codex", "grok", "opencode", "unknown"} {
+			if got := AllowedModel(agent, id); got != (agent == "antigravity") {
+				t.Errorf("AllowedModel(%q, %q) = %v", agent, id, got)
+			}
+			if got := ProviderOf(agent, id); got != "anthropic" {
+				t.Errorf("ProviderOf(%q, %q) = %q", agent, id, got)
+			}
+		}
 	}
 	if claudeModel.MatchString("grok-4.7-low") {
 		t.Error("grok must pass")
 	}
+}
+
+func installModelCLI(t *testing.T, agent, script string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cli")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	SetBinaries(map[string]string{agent: path})
+	t.Cleanup(func() { SetBinaries(nil) })
+}
+
+func TestModelDiscoveryClaudePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		a      Adapter
+		script string
+		want   []Model
+	}{
+		{Antigravity{}, "[ \"$1\" = models ] || exit 99\nprintf 'gemini-fast-low\tGemini\nclaude-opus-high\tClaude\n'\n", []Model{{ID: "gemini-fast-low"}, {ID: "claude-opus-high"}}},
+		{Cursor(), "printf 'gpt-small - GPT\nclaude-opus-high - Claude\n'\n", []Model{{ID: "gpt-small"}}},
+		{Grok(), "printf -- '- grok-fast\n- claude-opus-high\n'\n", []Model{{ID: "grok-fast"}}},
+		{OpenCode(), "printf 'openai/gpt-small\nanthropic/claude-opus-high\n'\n", []Model{{ID: "openai/gpt-small"}}},
+		{Codex{}, "read -r init\nread -r notification\nread -r request\nprintf '%s\\n' '{\"id\":2,\"result\":{\"data\":[{\"model\":\"gpt-small\"},{\"id\":\"claude-opus-high\"}]}}'\n", []Model{{ID: "gpt-small"}}},
+	} {
+		t.Run(tt.a.Name(), func(t *testing.T) {
+			installModelCLI(t, tt.a.Name(), tt.script)
+			got, err := tt.a.Models(context.Background())
+			if err != nil || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("models = %+v, %v; want %+v", got, err, tt.want)
+			}
+		})
+	}
+	t.Run("antigravity empty", func(t *testing.T) {
+		installModelCLI(t, "antigravity", "[ \"$1\" = models ] || exit 99\nprintf 'Fetching available models...\\n'\n")
+		got, err := (Antigravity{}).Models(context.Background())
+		if err != nil || len(got) != 0 {
+			t.Fatal(got, err)
+		}
+	})
+}
+
+func TestRunClaudePolicy(t *testing.T) {
+	for _, a := range []Adapter{Cursor(), Codex{}, Grok(), OpenCode()} {
+		t.Run(a.Name(), func(t *testing.T) {
+			installModelCLI(t, a.Name(), "exit 99\n")
+			_, err := a.Run(context.Background(), Request{}, "claude-opus-high")
+			if err == nil || err.Error() != a.Name()+": claude models are not routed through this CLI" {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Run("antigravity", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "args")
+		t.Setenv("DISPATCH_TEST_ARGS", path)
+		installModelCLI(t, "antigravity", "printf '%s\\n' \"$@\" > \"$DISPATCH_TEST_ARGS\"\nprintf '%s\\n' '{\"conversation_id\":\"c-1\",\"response\":\"ok\"}'\n")
+		r, err := (Antigravity{}).Run(context.Background(), Request{Prompt: "test"}, "claude-opus-high")
+		if err != nil || r.Output != "ok" || r.SessionID != "c-1" {
+			t.Fatal(r, err)
+		}
+		args, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(args), "--model\nclaude-opus-high\n") || !strings.HasSuffix(string(args), "-p\ntest\n") {
+			t.Fatalf("args = %q, %v", args, err)
+		}
+	})
 }
 
 func TestParseAgyUsage(t *testing.T) {

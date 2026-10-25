@@ -1,11 +1,36 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestAntigravityModelQuotaGroups(t *testing.T) {
+	installModelCLI(t, "antigravity", `
+[ "$1" = -p ] && [ "$2" = /usage ] && [ "$3" = --output-format ] && [ "$4" = json ] || exit 99
+printf '%s\n' '{"command":{"data":{"groups":[
+ {"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0.8,"reset_time":"2026-10-29T00:00:00Z"}]},
+ {"name":"Claude and GPT models","buckets":[{"window":"weekly","remaining_fraction":0.5,"reset_time":"2026-10-29T00:00:00Z"}]}]}}}'
+`)
+	models := []string{"claude-opus-high", "gemini-fast-low", "gpt-small"}
+	qs, err := (Antigravity{}).ModelQuotas(context.Background(), models)
+	if err != nil || len(qs) != len(models) {
+		t.Fatal(qs, err)
+	}
+	for _, model := range models {
+		key, used := "antigravity:Claude and GPT models", 50.0
+		if model == "gemini-fast-low" {
+			key, used = "antigravity:Gemini Models", 20
+		}
+		q := qs[model]
+		if q.Key != key || q.UsedPercent < used-0.01 || q.UsedPercent > used+0.01 {
+			t.Fatalf("%s: %+v", model, q)
+		}
+	}
+}
 
 func TestEmpiricalSampleOmitsPercent(t *testing.T) {
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
